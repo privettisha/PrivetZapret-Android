@@ -19,6 +19,8 @@ class VpnSmokeTest {
         device.findObject(By.text(text)).click(); device.waitForIdle()
     }
     private fun screenshot(name: String) {
+        // Wait for the rendered frame, not only the accessibility hierarchy.
+        Thread.sleep(350)
         val dir = File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
         assertTrue(device.takeScreenshot(File(dir, "$name.png")))
         device.executeShellCommand("mkdir -p /sdcard/Download/privetzapret")
@@ -53,8 +55,8 @@ class VpnSmokeTest {
         device.executeShellCommand("am start -n ru.privetdns.zapret/.MainActivity")
         assertTrue(device.wait(Until.hasObject(By.text("Подключить")), 10000))
         screenshot("01-home")
-        tap("DNS"); screenshot("02-dns")
-        tap("Настройки"); screenshot("03-settings")
+        tap("DNS"); assertTrue(device.wait(Until.hasObject(By.text("Ваш DNS")), 5000)); screenshot("02-dns")
+        tap("Настройки"); assertTrue(device.wait(Until.hasObject(By.text("ПРОФИЛЬ ОБХОДА")), 5000)); screenshot("03-settings")
         tap("Главная")
         repeat(2) { iteration ->
             tap("Подключить")
