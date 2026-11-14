@@ -1,0 +1,20 @@
+PrivetZapret Android — GPL-3.0, 2026 PrivetZapret contributors.
+
+JNI adapters byedpi-jni.c, hev-jni.c, main.h and initial native build integration
+are adapted from romanvht/ByeByeDPI (GPL-3.0), revision
+7b7eecf6b2b1e5174e1c857489e207bf0e919863.
+https://github.com/romanvht/ByeByeDPI
+Changes: application/JNI package, supported ABIs and API level; own Android service.
+Gradle wrapper scripts/jar retain their upstream Apache-2.0 notices.
+
+ByeDPI, hufrea — MIT, pinned to ba532298de7b28cfe854aea83d061369d13ca290.
+See app/src/main/cpp/byedpi/LICENSE.
+
+hev-socks5-tunnel, hev — MIT, pinned to 4d6c334dbfb68a79d1970c2744e62d09f71df12f.
+See app/src/main/jni/hev-socks5-tunnel/LICENSE and all nested dependency notices.
+Its submodules include hev-socks5-core, hev-task-system, lwIP and yaml;
+all are pinned by gitlinks and distributed with their original licenses.
+
+OkHttp / Okio, Square and contributors — Apache-2.0.
+Kotlin runtime, JetBrains and contributors — Apache-2.0.
+Android SDK build tooling and AndroidX test dependencies retain their respective licenses.

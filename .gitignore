@@ -1,0 +1,11 @@
+*.iml
+.gradle/
+.idea/
+**/build/
+**/.cxx/
+app/src/main/jniLibs/
+local.properties
+*.jks
+*.keystore
+.env
+captures/
