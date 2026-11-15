@@ -39,25 +39,6 @@ jobs:
           exit 1
       - name: Build, test and lint
         run: ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --no-daemon --console=plain
-      - name: Enable KVM for emulator
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: VPN smoke test from a separate application UID
-        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
-        with:
-          api-level: 35
-          arch: x86_64
-          target: google_apis
-          profile: pixel_6
-          disable-animations: true
-          script: |
-            python3 scripts/udp_echo.py &
-            echo $! > "$RUNNER_TEMP/privetzapret-udp-echo.pid"
-            trap 'kill "$(cat "$RUNNER_TEMP/privetzapret-udp-echo.pid")" 2>/dev/null || true' EXIT
-            ./gradlew :app:installDebug :probe:connectedDebugAndroidTest --no-daemon --console=plain
-            adb pull /sdcard/Download/privetzapret screenshots
       - name: Decode signing key
         if: github.event_name != 'pull_request'
         env:
@@ -84,9 +65,35 @@ jobs:
             app/build/outputs/apk/**/*.apk
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html
-            probe/build/reports/androidTests/
-            screenshots/
           if-no-files-found: error
       - name: Remove signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/privetzapret.jks"
+      - name: Enable KVM for emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: VPN smoke test from a separate application UID
+        timeout-minutes: 12
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            python3 scripts/udp_echo.py &
+            echo $! > "$RUNNER_TEMP/privetzapret-udp-echo.pid"
+            trap 'kill "$(cat "$RUNNER_TEMP/privetzapret-udp-echo.pid")" 2>/dev/null || true' EXIT
+            ./gradlew :app:installDebug :probe:connectedDebugAndroidTest --no-daemon --console=plain
+            adb pull /sdcard/Download/privetzapret screenshots
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: PrivetZapret-Android-Emulator
+          path: |
+            probe/build/reports/androidTests/
+            screenshots/
+          if-no-files-found: warn
