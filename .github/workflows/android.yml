@@ -46,6 +46,9 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
+            python3 scripts/udp_echo.py &
+            echo $! > "$RUNNER_TEMP/privetzapret-udp-echo.pid"
+            trap 'kill "$(cat "$RUNNER_TEMP/privetzapret-udp-echo.pid")" 2>/dev/null || true' EXIT
             ./gradlew :app:installDebug :probe:connectedDebugAndroidTest --no-daemon --console=plain
             adb pull /sdcard/Download/privetzapret screenshots
       - name: Decode signing key

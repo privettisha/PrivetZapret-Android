@@ -28,7 +28,6 @@ class MainActivity : Activity() {
     private lateinit var pages: FrameLayout
     private lateinit var power: Button
     private lateinit var headline: TextView
-    private lateinit var description: TextView
     private lateinit var statusLine: TextView
     private lateinit var mode: Switch
     private lateinit var dnsInput: EditText
@@ -89,7 +88,9 @@ class MainActivity : Activity() {
     private fun page(title: String, subtitle: String, build: LinearLayout.() -> Unit): View {
         val content = column().apply {
             setPadding(dp(24), dp(24), dp(24), dp(32))
-            addView(text(title, 30, ink, true)); space(8); addView(text(subtitle, 15, muted)); space(24); build()
+            if (title.isNotBlank()) { addView(text(title, 30, ink, true)); space(24) }
+            if (subtitle.isNotBlank()) { addView(text(subtitle, 15, muted)); space(24) }
+            build()
         }
         return ScrollView(this).apply { isFillViewport = true; addView(content) }
     }
@@ -109,7 +110,6 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(12))
             addView(ImageView(this@MainActivity).apply { setImageResource(R.drawable.ic_launcher); contentDescription = "" }, LinearLayout.LayoutParams(dp(32), dp(32)))
             addView(text("  PrivetZapret", 19, ink, true), LinearLayout.LayoutParams(0, -2, 1f))
-            addView(text("BETA 01", 11, blue, true))
         }
         root.addView(brand)
         pages = FrameLayout(this); root.addView(pages, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -127,48 +127,52 @@ class MainActivity : Activity() {
         selectTab(savedInstanceState?.getInt("tab") ?: 0); refreshSettings(); renderState("Готов к подключению", "")
         if (storageError) message("Не удалось прочитать сохранённый профиль. Введите DNS заново и сохраните его; старые настройки не были заменены.")
     }
-    private fun homePage() = page("Интернет,\nпо-приветски.", "Ваш DNS и локальный обход в одном приложении.") {
+    private fun homePage() = page("", "") {
         val hero = column().apply {
             background = shape(blue); setPadding(dp(22), dp(22), dp(22), dp(22))
-            addView(text("ПОДКЛЮЧЕНИЕ", 11, Color.rgb(207, 218, 255), true)); space(18)
             headline = text("Можно начинать", 25, Color.WHITE, true); addView(headline); space(10)
-            description = text("Без root. Внешний IP не меняется.", 15, Color.WHITE); addView(description); space(24)
+            space(14)
             power = button("Подключить") { toggle() }.apply { background = shape(mint); setTextColor(ink) }
             addView(power, LinearLayout.LayoutParams(-1, -2))
         }
         addView(hero); space(16)
         statusLine = text("Готов к подключению", 14, muted); addView(statusLine)
-        label("ПРИОРИТЕТНЫЕ ПРИЛОЖЕНИЯ")
-        val services = LinearLayout(this@MainActivity)
-        listOf("Telegram", "YouTube", "TikTok").forEach { name ->
-            services.addView(text(name, 13, blue, true).apply {
-                gravity = Gravity.CENTER; setPadding(dp(6), dp(12), dp(6), dp(12)); background = shape(Color.WHITE)
-            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+        space(18)
+        val services = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER }
+        listOf(
+            Triple("YouTube", R.drawable.ic_youtube, 0),
+            Triple("Telegram", R.drawable.ic_telegram, 1),
+            Triple("TikTok", R.drawable.ic_tiktok, 2)
+        ).forEach { (name, icon, index) ->
+            val card = column().apply {
+                gravity = Gravity.CENTER; background = shape(Color.WHITE)
+                setPadding(dp(8), dp(12), dp(8), dp(10))
+                addView(ImageView(this@MainActivity).apply {
+                    setImageResource(icon); contentDescription = name
+                }, LinearLayout.LayoutParams(dp(38), dp(38)))
+                space(7); addView(text(name, 12, ink, true).apply { gravity = Gravity.CENTER })
+            }
+            services.addView(card, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                if (index < 2) marginEnd = dp(8)
+            })
         }
-        addView(services); space(12)
-        addView(text("Доступность зависит от сети. Звонки и видео могут вести себя по-разному.", 13, muted))
+        addView(services)
         label("РЕЖИМ")
         mode = Switch(this@MainActivity).apply {
             text = "Только DNS"; textSize = 17f; setTextColor(ink); minHeight = dp(48)
             setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
         }
         addView(mode)
-        addView(text("Выключено — обход + DNS для приложений. Включено — только защищённые DNS-запросы.", 14, muted))
-        space(24)
-        addView(text("DNS выбирается на соседней вкладке. По умолчанию используется публичный Cloudflare DoH.", 13, muted))
     }
-    private fun dnsPage() = page("Ваш DNS", "Вставьте личную ссылку PrivetDNS или адрес другого сервера.") {
+    private fun dnsPage() = page("DNS", "") {
         addView(text("ОСНОВНОЙ СЕРВЕР", 12, muted, true)); space(8)
         dnsInput = field("https://…/dns-query или tls://…"); dnsInput.contentDescription = "Основной DNS"; addView(dnsInput)
-        space(8); addView(text("DoH — HTTPS-ссылка. DoT — имя сервера или tls://…:853.", 13, muted))
         label("РЕЗЕРВНЫЙ DOH · НЕОБЯЗАТЕЛЬНО")
         fallbackInput = field("https://…/dns-query"); fallbackInput.contentDescription = "Резервный DoH"; addView(fallbackInput)
-        space(8); addView(text("При блокировке DoT/853 попробуем эту ссылку через HTTPS/443. Вставьте отдельный DoH-адрес: личные ключи DoH и DoT могут различаться.", 13, muted))
         val advanced = column().apply {
             visibility = View.GONE
             label("IP ОСНОВНОГО СЕРВЕРА")
             bootstrapInput = field("IP именно вашего DNS-сервера"); bootstrapInput.contentDescription = "IP DNS-сервера"; addView(bootstrapInput)
-            space(8); addView(text("Если провайдер подменяет адрес сервера, укажите его IP. Сертификат по-прежнему проверяется по исходному имени. Без IP возможно начальное определение адреса через системный DNS.", 13, muted))
         }
         space(12)
         addView(text("Дополнительно: начальный IP  ▾", 14, blue, true).apply {
@@ -178,10 +182,9 @@ class MainActivity : Activity() {
         addView(advanced)
         space(24); save = button("Сохранить DNS") { saveDns() }; addView(save, LinearLayout.LayoutParams(-1, -2))
         space(10); dnsTest = button("Проверить DNS") { testDns() }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }; addView(dnsTest, LinearLayout.LayoutParams(-1, -2))
-        space(12); dnsResult = text("Проверка отправляет только тестовый DNS-запрос example.com. При подключении DNS также проверяется через модуль обхода.", 13, muted); addView(dnsResult)
-        space(20); addView(text("Профиль хранится зашифрованно на устройстве. Пустой резерв означает, что на другой DNS переходить не будем.", 13, muted))
+        space(12); dnsResult = text("", 13, muted); addView(dnsResult)
     }
-    private fun optionsPage() = page("Настройки", "Начните с автоматического профиля. Меняйте настройки при отключённом соединении.") {
+    private fun optionsPage() = page("Настройки", "") {
         addView(text("ПРОФИЛЬ ОБХОДА", 12, muted, true)); space(8)
         strategyGroup = RadioGroup(this@MainActivity)
         listOf("Автоматический", "Разделение пакетов", "Разделение TLS").forEachIndexed { i, name ->
@@ -189,17 +192,21 @@ class MainActivity : Activity() {
         }
         strategyGroup.setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }; addView(strategyGroup)
         space(12); quic = Switch(this@MainActivity).apply {
-            text = "Видео через TCP"; textSize = 17f; setTextColor(ink); minHeight = dp(52)
+            text = "Принудительно использовать TCP"; textSize = 17f; setTextColor(ink); minHeight = dp(52)
             setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
         }; addView(quic)
-        addView(text("Отключает UDP/443 в режиме обхода, чтобы приложения могли перейти с QUIC на TCP. Некоторым приложениям это мешает — тогда выключите.", 13, muted))
-        label("КАК ЭТО РАБОТАЕТ")
-        addView(text("Android показывает значок VPN, потому что приложение обрабатывает трафик локально. Удалённого VPN-сервера здесь нет. Шифруются DNS-запросы; обычный трафик защищают сами приложения через HTTPS/TLS. Провайдер по-прежнему видит IP-адреса и объём соединений.", 14, muted))
-        space(14); addView(text("Обход не гарантирует доступ при блокировке IP, белых списках или отключении связи. Ограничения TikTok по региону и SIM-карте могут сохраниться. Другое VPN-приложение одновременно работать не сможет. Строгий «Частный DNS» Android и DNS внутри браузера могут использовать собственный сервер.", 14, muted))
         label("О ПРОЕКТЕ")
-        addView(text("PrivetZapret Android · 0.1.0 beta\nОснова: ByeDPI и hev-socks5-tunnel. JNI-адаптеры из ByeByeDPI. Открытый код, без аналитики.", 14, muted)); space(12)
-        addView(button("Исходный код и инструкция") {
-            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/privettisha/PrivetZapret-Android")))
+        addView(text("PrivetZapret Android · 0.2.0 beta", 14, muted)); space(12)
+        addView(button("Обновить приложение") {
+            openLink("https://github.com/privettisha/PrivetZapret-Android/releases/latest/download/PrivetZapret-Android.apk")
+        }, LinearLayout.LayoutParams(-1, -2))
+        space(10)
+        addView(button("GitHub") { openLink("https://github.com/privettisha/PrivetZapret-Android") }.apply {
+            background = shape(Color.WHITE, blue); setTextColor(blue)
+        }, LinearLayout.LayoutParams(-1, -2))
+        space(10)
+        addView(button("Telegram") { openLink("https://t.me/PRIVET_DNS") }.apply {
+            background = shape(Color.WHITE, blue); setTextColor(blue)
         }, LinearLayout.LayoutParams(-1, -2))
     }
     private fun selectTab(index: Int) {
@@ -269,7 +276,6 @@ class MainActivity : Activity() {
     private fun renderState(detail: String, dns: String) {
         val off = state == "off"
         headline.text = when (state) { "on" -> "Вы подключены"; "starting" -> "Подключаем…"; "stopping" -> "Отключаем…"; else -> "Можно начинать" }
-        description.text = if (state == "on") (if (settings.dnsOnly) "Работает ваш защищённый DNS." else "Локальный обход + защищённый DNS.") else "Без root. Внешний IP не меняется."
         power.text = if (off) "Подключить" else if (state == "starting") "Отменить" else "Отключить"
         power.isEnabled = state != "stopping"
         statusLine.text = listOf(detail, dns).filter { it.isNotBlank() }.joinToString(" · ")
@@ -278,6 +284,7 @@ class MainActivity : Activity() {
         listOf(dnsInput, fallbackInput, bootstrapInput, save).forEach { it.isEnabled = off }
         dnsTest.isEnabled = off && !testing
     }
+    private fun openLink(url: String) { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
     private fun message(value: String) { AlertDialog.Builder(this).setMessage(value).setPositiveButton("Понятно", null).show() }
     @SuppressLint("UnspecifiedRegisterReceiverFlag") // API <33 uses our signature-only permission instead.
     override fun onResume() {

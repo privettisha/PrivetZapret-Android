@@ -50,6 +50,44 @@ class GatewayTest {
         }
         assertEquals(2, calls)
     }
+    @Test fun nonDnsUdpIsRelayedThroughNativeSocksWithFramingIntact() {
+        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { native ->
+            val worker = Executors.newSingleThreadExecutor()
+            val seen = CompletableFuture<ByteArray>()
+            val done = worker.submit {
+                native.accept().use { control ->
+                    val input = DataInputStream(control.getInputStream()); val output = control.getOutputStream()
+                    ByteArray(3).also { input.readFully(it) }; output.write(byteArrayOf(5, 0))
+                    val associate = ByteArray(10); input.readFully(associate)
+                    assertArrayEquals(byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0), associate)
+                    DatagramSocket(InetSocketAddress(InetAddress.getLoopbackAddress(), 0)).use { udpRelay ->
+                        val p = udpRelay.localPort
+                        output.write(byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, (p shr 8).toByte(), p.toByte())); output.flush()
+                        val packet = DatagramPacket(ByteArray(4096), 4096); udpRelay.receive(packet)
+                        val frame = packet.data.copyOf(packet.length); seen.complete(frame)
+                        val response = frame.copyOfRange(0, 10) + "native-reply".toByteArray()
+                        udpRelay.send(DatagramPacket(response, response.size, packet.socketAddress))
+                    }
+                }
+            }
+            SocksGateway(native.localPort, "test-secret", DnsWire::failure, false).use { g ->
+                g.start(); connect(g, 3, 0).use { control ->
+                    val header = ByteArray(10); DataInputStream(control.getInputStream()).readFully(header)
+                    val relayPort = (header[8].toInt().and(255) shl 8) or header[9].toInt().and(255)
+                    DatagramSocket().use { client ->
+                        client.soTimeout = 3000
+                        val prefix = byteArrayOf(0, 0, 0, 1, 10, 111, 0, 2, 1, -69) // 443
+                        val request = prefix + "quic-request".toByteArray()
+                        client.send(DatagramPacket(request, request.size, InetAddress.getLoopbackAddress(), relayPort))
+                        assertArrayEquals(request, seen.get(3, TimeUnit.SECONDS))
+                        val response = DatagramPacket(ByteArray(4096), 4096); client.receive(response)
+                        assertArrayEquals(prefix + "native-reply".toByteArray(), response.data.copyOf(response.length))
+                    }
+                }
+            }
+            done.get(3, TimeUnit.SECONDS); worker.shutdownNow()
+        }
+    }
     @Test fun unauthenticatedSocksIsRejected() {
         SocksGateway(1, "test-secret", DnsWire::failure, true).use { g ->
             g.start(); Socket("127.0.0.1", g.port).use { s ->

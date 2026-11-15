@@ -18,7 +18,7 @@ class Settings(
     val bootstrap: String = "",
     val dnsOnly: Boolean = false,
     val strategy: String = "auto",
-    val blockQuic: Boolean = true
+    val blockQuic: Boolean = false
 ) {
     fun profile() = DnsProfile.parse(dns, fallback, bootstrap)
     companion object {
@@ -38,14 +38,17 @@ class Settings(
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
             val data = JSONObject(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8))
+            // v1 enabled QUIC blocking by default. That broke TikTok and Telegram media, so
+            // old profiles migrate to UDP enabled while v2 still respects an explicit choice.
+            val blockQuic = if (data.optInt("schema", 1) >= 2) data.optBoolean("blockQuic", false) else false
             return Settings(data.getString("dns"), data.optString("fallback"), data.optString("bootstrap"),
-                data.optBoolean("dnsOnly"), data.optString("strategy", "auto"), data.optBoolean("blockQuic", true))
+                data.optBoolean("dnsOnly"), data.optString("strategy", "auto"), blockQuic)
         }
         fun save(context: Context, settings: Settings) {
             settings.profile()
             val data = JSONObject().put("dns", settings.dns).put("fallback", settings.fallback)
                 .put("bootstrap", settings.bootstrap).put("dnsOnly", settings.dnsOnly)
-                .put("strategy", settings.strategy).put("blockQuic", settings.blockQuic)
+                .put("strategy", settings.strategy).put("blockQuic", settings.blockQuic).put("schema", 2)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
             val bytes = cipher.doFinal(data.toString().toByteArray())
             val file = android.util.AtomicFile(java.io.File(context.filesDir, "profile.bin"))

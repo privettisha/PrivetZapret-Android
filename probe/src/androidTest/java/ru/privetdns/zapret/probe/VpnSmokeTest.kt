@@ -47,6 +47,15 @@ class VpnSmokeTest {
             input.readFully(answer); checkAnswer(answer)
         }
     }
+    private fun checkUdpRelay() {
+        val payload = "privetzapret-udp-${System.nanoTime()}".toByteArray()
+        DatagramSocket().use { socket ->
+            socket.soTimeout = 10000
+            socket.send(DatagramPacket(payload, payload.size, InetAddress.getByName("10.0.2.2"), 39876))
+            val reply = DatagramPacket(ByteArray(256), 256); socket.receive(reply)
+            assertArrayEquals(payload, reply.data.copyOf(reply.length))
+        }
+    }
     @Test fun dnsAndHttpsAcrossRealVpnAndRepeatedStartStop() {
         org.junit.Assume.assumeTrue("Dedicated emulator only", device.executeShellCommand("getprop ro.kernel.qemu").trim() == "1")
         device.executeShellCommand("pm clear ru.privetdns.zapret")
@@ -55,7 +64,7 @@ class VpnSmokeTest {
         device.executeShellCommand("am start -n ru.privetdns.zapret/.MainActivity")
         assertTrue(device.wait(Until.hasObject(By.text("Подключить")), 10000))
         screenshot("01-home")
-        tap("DNS"); assertTrue(device.wait(Until.hasObject(By.text("Ваш DNS")), 5000)); screenshot("02-dns")
+        tap("DNS"); assertTrue(device.wait(Until.hasObject(By.text("DNS")), 5000)); screenshot("02-dns")
         tap("Настройки"); assertTrue(device.wait(Until.hasObject(By.text("ПРОФИЛЬ ОБХОДА")), 5000)); screenshot("03-settings")
         tap("Главная")
         repeat(2) { iteration ->
@@ -63,6 +72,7 @@ class VpnSmokeTest {
             assertTrue("VPN startup failed", device.wait(Until.hasObject(By.text("Вы подключены")), 40000))
             screenshot("04-connected-$iteration")
             checkDns()
+            checkUdpRelay()
             val connection = URL("https://example.com").openConnection() as HttpsURLConnection
             connection.connectTimeout = 15000; connection.readTimeout = 15000
             try { assertEquals(200, connection.responseCode); assertTrue(connection.inputStream.use { it.readBytes().size } > 100) }
@@ -72,9 +82,7 @@ class VpnSmokeTest {
             Thread.sleep(700)
         }
         // The DNS-only route must also pass both UDP and TCP DNS.
-        val scroll = UiScrollable(UiSelector().scrollable(true))
-        scroll.scrollTextIntoView("Только DNS")
-        tap("Только DNS"); scroll.scrollToBeginning(8)
+        tap("Только DNS")
         tap("Подключить")
         assertTrue(device.wait(Until.hasObject(By.text("Вы подключены")), 40000))
         checkDns(); screenshot("05-dns-only")

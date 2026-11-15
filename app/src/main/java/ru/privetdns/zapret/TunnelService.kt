@@ -55,8 +55,11 @@ class TunnelService : VpnService() {
         val config = Settings.load(this)
         val profile = config.profile()
         val nativePort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
-        val args = mutableListOf("byedpi", "--ip", "127.0.0.1", "--port", nativePort.toString(), "--max-conn", "256", "--no-udp")
+        val args = mutableListOf("byedpi", "--ip", "127.0.0.1", "--port", nativePort.toString(), "--max-conn", "256", "--no-domain")
         if (!config.dnsOnly) {
+            // QUIC/TikTok and Telegram media must use the same DPI engine as TCP. The first
+            // UDP/443 packet gets harmless low-TTL decoys before the original is delivered.
+            args.addAll(listOf("--proto", "udp", "--pf", "443", "--udp-fake", "2", "--auto=none"))
             when (config.strategy) {
                 "split" -> args.addAll(listOf("--split", "1"))
                 "tls" -> args.addAll(listOf("--tlsrec", "1+s", "--split", "1+s"))

@@ -6,7 +6,7 @@ import java.security.MessageDigest
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Authenticated loopback bridge: DNS -> encrypted resolver; TCP -> ByeDPI; other UDP -> direct. */
+/** Authenticated loopback bridge: DNS -> encrypted resolver; TCP/UDP -> ByeDPI. */
 class SocksGateway(
     private val nativePort: Int,
     private val password: String,
@@ -18,7 +18,7 @@ class SocksGateway(
     val port: Int get() = server.localPort
     private val connections = ConcurrentHashMap.newKeySet<Closeable>()
     private val slots = Semaphore(96)
-    private val udpSlots = Semaphore(64)
+    private val udpSlots = Semaphore(128)
     private val workers = Executors.newCachedThreadPool { runnable ->
         Thread(null, runnable, "pzp-io", 256 * 1024L).apply { isDaemon = true }
     }
@@ -122,9 +122,62 @@ class SocksGateway(
             } finally { connections.remove(upstream) }
         }
     }
+
+    /** One ByeDPI UDP association is used per destination because ByeDPI locks it to the first peer. */
+    private inner class NativeUdpFlow(private val onFrame: (ByteArray) -> Unit) : Closeable {
+        private val control = Socket()
+        private val socket = DatagramSocket(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0))
+        private val relay: InetSocketAddress
+        private val closed = AtomicBoolean(false)
+
+        init {
+            try {
+                control.connect(InetSocketAddress("127.0.0.1", nativePort), 4000)
+                control.soTimeout = 8000
+                control.tcpNoDelay = true
+                val input = DataInputStream(control.getInputStream())
+                val output = control.getOutputStream()
+                output.write(byteArrayOf(5, 1, 0)); output.flush()
+                require(input.readUnsignedByte() == 5 && input.readUnsignedByte() == 0)
+                // UDP ASSOCIATE. ByeDPI uses the first datagram to select the actual destination.
+                output.write(byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); output.flush()
+                require(input.readUnsignedByte() == 5)
+                val code = input.readUnsignedByte(); input.readUnsignedByte()
+                val endpoint = target(input)
+                require(code == 0 && endpoint.port != 0)
+                relay = InetSocketAddress(endpoint.host, endpoint.port)
+                socket.connect(relay)
+                connections.add(control); connections.add(socket)
+            } catch (e: Exception) {
+                runCatching { control.close() }; socket.close(); throw e
+            }
+        }
+
+        fun send(frame: ByteArray) {
+            check(!closed.get())
+            socket.send(DatagramPacket(frame, frame.size))
+        }
+
+        fun receive() {
+            val bytes = ByteArray(65535)
+            while (alive.get() && !closed.get()) {
+                val packet = DatagramPacket(bytes, bytes.size)
+                try { socket.receive(packet) } catch (_: IOException) { break }
+                if (packet.length < 10) continue
+                onFrame(packet.data.copyOf(packet.length))
+            }
+        }
+
+        override fun close() {
+            if (!closed.compareAndSet(false, true)) return
+            connections.remove(control); connections.remove(socket)
+            runCatching { control.close() }; socket.close()
+        }
+    }
+
     private fun udp(control: Socket, requestedPort: Int) {
         val relay = DatagramSocket(InetSocketAddress("127.0.0.1", 0)); connections.add(relay)
-        val flows = ConcurrentHashMap<String, DatagramSocket>()
+        val flows = ConcurrentHashMap<String, NativeUdpFlow>()
         reply(control.getOutputStream(), port = relay.localPort)
         control.soTimeout = 0
         val receiver = workers.submit {
@@ -142,38 +195,43 @@ class SocksGateway(
                     val destination = target(input)
                     val payload = input.readBytes()
                     if (clientAddress == null) clientAddress = source
-                    fun sendReply(data: ByteArray) {
-                        if (data.isEmpty()) return
-                        val response = byteArrayOf(0, 0, 0) + destination.wire + data
+                    fun sendFrame(response: ByteArray) {
+                        if (response.isEmpty()) return
                         runCatching { relay.send(DatagramPacket(response, response.size, source)) }
                     }
                     if (destination.port == 53) {
-                        try { dnsWorkers.execute { sendReply(answer(payload)) } } catch (_: RejectedExecutionException) { }
+                        try {
+                            dnsWorkers.execute {
+                                sendFrame(byteArrayOf(0, 0, 0) + destination.wire + answer(payload))
+                            }
+                        } catch (_: RejectedExecutionException) { }
                         continue
                     }
                     if (blockQuic && destination.port == 443) continue
-                    // Hev normally sends IP addresses. Refuse a domain UDP address rather than leak a DNS lookup.
+                    // Hev normally sends IP addresses. Refuse domains so ByeDPI never uses system DNS.
                     if (destination.wire[0].toInt() == 3) continue
                     val key = "${destination.host}:${destination.port}"
                     var flow = flows[key]
                     if (flow == null) {
-                        if (!udpSlots.tryAcquire()) continue
-                        val created = try {
-                            DatagramSocket().apply { connect(InetSocketAddress(destination.host, destination.port)); soTimeout = 30000 }
-                        } catch (_: Exception) { udpSlots.release(); continue }
-                        flow = created; flows[key] = created; connections.add(created)
-                        workers.execute {
-                            try {
-                                val responseBytes = ByteArray(65507)
-                                while (alive.get() && !created.isClosed) {
-                                    val response = DatagramPacket(responseBytes, responseBytes.size)
-                                    created.receive(response); sendReply(response.data.copyOf(response.length))
+                        synchronized(flows) {
+                            flow = flows[key]
+                            if (flow == null && udpSlots.tryAcquire()) {
+                                val created = try { NativeUdpFlow(::sendFrame) }
+                                catch (_: Exception) { udpSlots.release(); null }
+                                if (created != null) {
+                                    flow = created; flows[key] = created
+                                    workers.execute {
+                                        try { created.receive() }
+                                        finally {
+                                            flows.remove(key, created); created.close(); udpSlots.release()
+                                        }
+                                    }
                                 }
-                            } catch (_: Exception) { }
-                            finally { flows.remove(key, created); connections.remove(created); created.close(); udpSlots.release() }
+                            }
                         }
                     }
-                    runCatching { flow.send(DatagramPacket(payload, payload.size)) }
+                    // Forward the complete RFC 1928 UDP frame; ByeDPI parses and desynchronizes it.
+                    flow?.let { runCatching { it.send(packet.data.copyOf(packet.length)) } }
                 } catch (_: Exception) { /* malformed packet, isolated from other flows */ }
             }
         }
