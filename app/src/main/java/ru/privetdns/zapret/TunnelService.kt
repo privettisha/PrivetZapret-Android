@@ -8,11 +8,14 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import java.net.*
 import java.net.Proxy
+import java.io.File
 import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import ru.privetdns.zapret.net.*
+import org.flowseal.tgwsproxy.proxy.OutboundSocket
+import org.flowseal.tgwsproxy.proxy.ProxyServer
 
 class TunnelService : VpnService() {
     companion object {
@@ -30,10 +33,12 @@ class TunnelService : VpnService() {
     @Volatile private var detail = "Готов к подключению"
     @Volatile private var dnsStatus = ""
     @Volatile private var health = ""
+    @Volatile private var telegramStatus = ""
     @Volatile private var nativePort = 0
     @Volatile private var tun: ParcelFileDescriptor? = null
     @Volatile private var dns: EncryptedDns? = null
     @Volatile private var gateway: SocksGateway? = null
+    @Volatile private var telegramProxy: ProxyServer? = null
     private var nativeUsed = false
     private var callback: ConnectivityManager.NetworkCallback? = null
 
@@ -63,9 +68,17 @@ class TunnelService : VpnService() {
         nativePort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
         val args = mutableListOf("byedpi", "--ip", "127.0.0.1", "--port", nativePort.toString(), "--max-conn", "256", "--no-domain")
         if (!config.dnsOnly) {
-            // QUIC/TikTok and Telegram media must use the same DPI engine as TCP. The first
-            // UDP/443 packet gets harmless low-TTL decoys before the original is delivered.
-            args.addAll(listOf("--proto", "udp", "--pf", "443", "--udp-fake", "2", "--auto=none"))
+            // ByeDPI otherwise sends decoys for every UDP packet. Only the first QUIC
+            // datagram needs them; subsequent media packets pass unchanged.
+            args.addAll(listOf("--proto", "udp", "--pf", "443", "--round", "1"))
+            if (config.desktopQuic && !config.blockQuic) {
+                val fake = File(filesDir, "quic_initial_www_google_com.bin")
+                assets.open(fake.name).use { input -> fake.outputStream().use { input.copyTo(it) } }
+                args.addAll(listOf("--udp-fake", "11", "--fake-data", fake.absolutePath))
+            } else {
+                args.addAll(listOf("--udp-fake", "2"))
+            }
+            args.add("--auto=none")
             when (config.strategy) {
                 "split" -> args.addAll(listOf("--split", "1"))
                 "tls" -> args.addAll(listOf("--tlsrec", "1+s", "--split", "1+s"))
@@ -92,15 +105,25 @@ class TunnelService : VpnService() {
             }
         }
         check(ready && !stopping.get())
+        OutboundSocket.byeDpiPort = nativePort
         val resolver = EncryptedDns(profile, Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", nativePort)), { s ->
             if (dnsStatus != s) { dnsStatus = s; publish() }
         })
         dns = resolver
+        OutboundSocket.resolveName = { host ->
+            val query = DnsWire.query(host)
+            DnsWire.addresses(query, resolver.resolve(query)).firstOrNull()
+                ?: throw java.net.UnknownHostException(host)
+        }
         check(DnsWire.hasAnswer(resolver.resolve(DnsWire.query("example.com"))))
         if (stopping.get()) return
         val password = ByteArray(24).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
         val bridge = SocksGateway(nativePort, password, resolver::resolve, config.blockQuic && !config.dnsOnly)
         gateway = bridge; bridge.start()
+        if (!config.dnsOnly) {
+            telegramProxy = runCatching { ProxyServer(port = 14430).also { it.start() } }.getOrNull()
+            telegramStatus = if (telegramProxy == null) "Не удалось запустить Telegram-прокси" else "ready"
+        }
         val builder = Builder().setSession("PrivetZapret").setMtu(1500)
             .addAddress("10.111.0.1", 32).addDnsServer(DNS_IP)
             .addDisallowedApplication(packageName)
@@ -186,17 +209,22 @@ class TunnelService : VpnService() {
     }
     private fun publish() {
         sendBroadcast(Intent(STATUS).setPackage(packageName).putExtra("state", state).putExtra("detail", detail)
-            .putExtra("dns", dnsStatus).putExtra("health", health), "ru.privetdns.zapret.INTERNAL")
+            .putExtra("dns", dnsStatus).putExtra("health", health).putExtra("telegram", telegramStatus),
+            "ru.privetdns.zapret.INTERNAL")
     }
     @Synchronized private fun stopEngine(error: String? = null) {
         if (!stopping.compareAndSet(false, true)) return
         state = "stopping"; detail = "Отключение"; publish()
         callback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
         if (nativeUsed) { runCatching { NativeBridge.stopTunnel() }; runCatching { NativeBridge.stopProxy() } }
-        runCatching { tun?.close() }; runCatching { gateway?.close() }; runCatching { dns?.close() }
+        runCatching { tun?.close() }; runCatching { telegramProxy?.stop() }
+        runCatching { gateway?.close() }; runCatching { dns?.close() }
+        OutboundSocket.byeDpiPort = 0
+        OutboundSocket.resolveName = null
         worker.shutdownNow()
         stopForeground(STOP_FOREGROUND_REMOVE)
-        state = "off"; detail = error ?: "Готов к подключению"; dnsStatus = ""; health = ""; publish(); stopSelf()
+        state = "off"; detail = error ?: "Готов к подключению"; dnsStatus = ""; health = ""
+        telegramStatus = ""; publish(); stopSelf()
         // ByeDPI has process-global state. Only the isolated :engine worker is terminated.
         if (nativeUsed) android.os.Process.killProcess(android.os.Process.myPid())
     }

@@ -9,6 +9,8 @@ import org.junit.runner.RunWith
 import java.io.*
 import java.net.*
 import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /** A SEPARATE application UID: its packets really cross the VPN, unlike the excluded UI process. */
 @RunWith(AndroidJUnit4::class)
@@ -56,6 +58,26 @@ class VpnSmokeTest {
             assertArrayEquals(payload, reply.data.copyOf(reply.length))
         }
     }
+    private fun checkTelegramProxy() {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress("127.0.0.1", 14430), 3000)
+            socket.soTimeout = 3000
+            socket.getOutputStream().write(byteArrayOf(5, 1, 0))
+            assertEquals(5, socket.getInputStream().read())
+            assertEquals(0, socket.getInputStream().read())
+        }
+        Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", 14430))).use { raw ->
+            raw.connect(InetSocketAddress.createUnresolved("example.com", 443), 10000)
+            ((SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(raw, "example.com", 443, true) as SSLSocket).use { tls ->
+                tls.soTimeout = 10000
+                tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                tls.startHandshake()
+                tls.outputStream.write("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n".toByteArray())
+                val line = tls.inputStream.bufferedReader().readLine()
+                assertTrue("Telegram proxy passthrough failed: $line", line.startsWith("HTTP/1.1 200"))
+            }
+        }
+    }
     @Test fun dnsAndHttpsAcrossRealVpnAndRepeatedStartStop() {
         org.junit.Assume.assumeTrue("Dedicated emulator only", device.executeShellCommand("getprop ro.kernel.qemu").trim() == "1")
         device.executeShellCommand("pm clear ru.privetdns.zapret")
@@ -68,11 +90,17 @@ class VpnSmokeTest {
         tap("Настройки"); assertTrue(device.wait(Until.hasObject(By.text("ПРОФИЛЬ ОБХОДА")), 5000)); screenshot("03-settings")
         tap("Главная")
         repeat(2) { iteration ->
+            if (iteration == 1) {
+                tap("Настройки")
+                tap("QUIC-приманка из версии ПК")
+                tap("Главная")
+            }
             tap("Подключить")
             assertTrue("VPN startup failed", device.wait(Until.hasObject(By.text("Вы подключены")), 40000))
             assertTrue("HTTPS health probe failed", device.wait(Until.hasObject(By.textContains("HTTPS отвечает через")), 40000))
             screenshot("04-connected-$iteration")
             checkDns()
+            checkTelegramProxy()
             checkUdpRelay()
             val connection = URL("https://example.com").openConnection() as HttpsURLConnection
             connection.connectTimeout = 15000; connection.readTimeout = 15000

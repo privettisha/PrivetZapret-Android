@@ -18,7 +18,8 @@ class Settings(
     val bootstrap: String = "",
     val dnsOnly: Boolean = false,
     val strategy: String = "auto",
-    val blockQuic: Boolean = false
+    val blockQuic: Boolean = false,
+    val desktopQuic: Boolean = false
 ) {
     fun profile() = DnsProfile.parse(dns, fallback, bootstrap)
     companion object {
@@ -42,13 +43,15 @@ class Settings(
             // old profiles migrate to UDP enabled while v2 still respects an explicit choice.
             val blockQuic = if (data.optInt("schema", 1) >= 2) data.optBoolean("blockQuic", false) else false
             return Settings(data.getString("dns"), data.optString("fallback"), data.optString("bootstrap"),
-                data.optBoolean("dnsOnly"), data.optString("strategy", "auto"), blockQuic)
+                data.optBoolean("dnsOnly"), data.optString("strategy", "auto"), blockQuic,
+                data.optBoolean("desktopQuic", false))
         }
         fun save(context: Context, settings: Settings) {
             settings.profile()
             val data = JSONObject().put("dns", settings.dns).put("fallback", settings.fallback)
                 .put("bootstrap", settings.bootstrap).put("dnsOnly", settings.dnsOnly)
-                .put("strategy", settings.strategy).put("blockQuic", settings.blockQuic).put("schema", 2)
+                .put("strategy", settings.strategy).put("blockQuic", settings.blockQuic)
+                .put("desktopQuic", settings.desktopQuic).put("schema", 3)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
             val bytes = cipher.doFinal(data.toString().toByteArray())
             val file = android.util.AtomicFile(java.io.File(context.filesDir, "profile.bin"))

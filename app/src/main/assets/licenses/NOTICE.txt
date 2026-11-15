@@ -10,6 +10,16 @@ Gradle wrapper scripts/jar retain their upstream Apache-2.0 notices.
 ByeDPI, hufrea — MIT, pinned to ba532298de7b28cfe854aea83d061369d13ca290.
 See app/src/main/cpp/byedpi/LICENSE.
 
+The QUIC Initial test payload quic_initial_www_google_com.bin comes from
+bol-van/zapret2 (MIT). See ZAPRET2-LICENSE.txt.
+
+The local Telegram SOCKS5/WebSocket proxy classes in
+org/flowseal/tgwsproxy/proxy are adapted from ihtfw/tg-ws-proxy-android
+(MIT), revision ffbdfac1749d07e6d3dead55514d1f99d508d8e0, with
+certificate and hostname validation and connection limits.
+See TGWS-ANDROID-MIT.txt.
+The upstream tg-ws-proxy by Flowseal is MIT; see TG-WS-PROXY-LICENSE.txt.
+
 hev-socks5-tunnel, hev — MIT, pinned to 4d6c334dbfb68a79d1970c2744e62d09f71df12f.
 See app/src/main/jni/hev-socks5-tunnel/LICENSE and all nested dependency notices.
 Its submodules include hev-socks5-core, hev-task-system, lwIP and yaml;

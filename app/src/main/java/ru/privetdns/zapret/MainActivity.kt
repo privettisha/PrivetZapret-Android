@@ -31,6 +31,7 @@ class MainActivity : Activity() {
     private lateinit var statusLine: TextView
     private lateinit var healthLine: TextView
     private lateinit var connectionTest: Button
+    private lateinit var telegramConnect: Button
     private lateinit var mode: Switch
     private lateinit var dnsInput: EditText
     private lateinit var fallbackInput: EditText
@@ -40,10 +41,12 @@ class MainActivity : Activity() {
     private lateinit var dnsResult: TextView
     private lateinit var strategyGroup: RadioGroup
     private lateinit var quic: Switch
+    private lateinit var desktopQuic: Switch
     private val nav = ArrayList<TextView>()
     private val pageViews = ArrayList<View>()
     private var currentTab = 0
     private var state = "off"
+    private var telegramStatus = ""
     private var storageError = false
     private var refreshing = false
     private val io = Executors.newSingleThreadExecutor()
@@ -59,6 +62,7 @@ class MainActivity : Activity() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             state = intent.getStringExtra("state") ?: "off"
+            telegramStatus = intent.getStringExtra("telegram") ?: ""
             renderState(intent.getStringExtra("detail") ?: "", intent.getStringExtra("dns") ?: "",
                 intent.getStringExtra("health") ?: "")
         }
@@ -167,6 +171,13 @@ class MainActivity : Activity() {
             })
         }
         addView(services)
+        space(12)
+        telegramConnect = button("Подключить Telegram") {
+            try { openLink("tg://socks?server=127.0.0.1&port=14430") }
+            catch (_: Exception) { message("Откройте Telegram → Настройки → Данные и память → Прокси: SOCKS5, 127.0.0.1, порт 14430.") }
+        }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }
+        addView(telegramConnect, LinearLayout.LayoutParams(-1, -2))
+        addView(text("Для сообщений и медиа Telegram включите локальный SOCKS5-прокси в Telegram. Звонки проверяются отдельно.", 13, muted))
         label("РЕЖИМ")
         mode = Switch(this@MainActivity).apply {
             text = "Только DNS"; textSize = 17f; setTextColor(ink); minHeight = dp(48)
@@ -205,8 +216,14 @@ class MainActivity : Activity() {
             text = "Принудительно использовать TCP"; textSize = 17f; setTextColor(ink); minHeight = dp(52)
             setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
         }; addView(quic)
+        space(12)
+        desktopQuic = Switch(this@MainActivity).apply {
+            text = "QUIC-приманка из версии ПК"; textSize = 17f; setTextColor(ink); minHeight = dp(52)
+            setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
+        }; addView(desktopQuic)
+        addView(text("Эксперимент для TikTok: приманка QUIC из версии ПК только в начале UDP/443. Переподключитесь после смены профиля.", 13, muted))
         label("О ПРОЕКТЕ")
-        addView(text("PrivetZapret Android · 0.2.1 beta", 14, muted)); space(12)
+        addView(text("PrivetZapret Android · 0.3.0 beta", 14, muted)); space(12)
         addView(button("Обновить приложение") {
             openLink("https://github.com/privettisha/PrivetZapret-Android/releases/latest/download/PrivetZapret-Android.apk")
         }, LinearLayout.LayoutParams(-1, -2))
@@ -227,6 +244,7 @@ class MainActivity : Activity() {
     private fun refreshSettings() {
         refreshing = true
         mode.isChecked = settings.dnsOnly; quic.isChecked = settings.blockQuic
+        desktopQuic.isChecked = settings.desktopQuic
         strategyGroup.check(300 + when (settings.strategy) { "split" -> 1; "tls" -> 2; else -> 0 })
         dnsInput.setText(settings.dns); fallbackInput.setText(settings.fallback); bootstrapInput.setText(settings.bootstrap)
         refreshing = false
@@ -234,12 +252,14 @@ class MainActivity : Activity() {
     private fun saveOptions() {
         if (state != "off") return
         val next = Settings(settings.dns, settings.fallback, settings.bootstrap, mode.isChecked,
-            when (strategyGroup.checkedRadioButtonId) { 301 -> "split"; 302 -> "tls"; else -> "auto" }, quic.isChecked)
+            when (strategyGroup.checkedRadioButtonId) { 301 -> "split"; 302 -> "tls"; else -> "auto" },
+            quic.isChecked, desktopQuic.isChecked)
         try { if (storageError) return; Settings.save(this, next); settings = next }
         catch (_: Exception) { message("Не удалось сохранить настройки"); refreshSettings() }
     }
     private fun form() = Settings(dnsInput.text.toString().trim(), fallbackInput.text.toString().trim(),
-        bootstrapInput.text.toString().trim(), settings.dnsOnly, settings.strategy, settings.blockQuic)
+        bootstrapInput.text.toString().trim(), settings.dnsOnly, settings.strategy, settings.blockQuic,
+        settings.desktopQuic)
     private fun saveDns() {
         try {
             val next = form(); next.profile(); Settings.save(this, next); settings = next; storageError = false
@@ -291,7 +311,8 @@ class MainActivity : Activity() {
         statusLine.text = listOf(detail, dns).filter { it.isNotBlank() }.joinToString(" · ")
         healthLine.text = health
         connectionTest.isEnabled = state == "on" && !health.startsWith("Проверяем")
-        mode.isEnabled = off; quic.isEnabled = off
+        telegramConnect.isEnabled = state == "on" && telegramStatus == "ready"
+        mode.isEnabled = off; quic.isEnabled = off; desktopQuic.isEnabled = off
         for (i in 0 until strategyGroup.childCount) strategyGroup.getChildAt(i).isEnabled = off
         listOf(dnsInput, fallbackInput, bootstrapInput, save).forEach { it.isEnabled = off }
         dnsTest.isEnabled = off && !testing
