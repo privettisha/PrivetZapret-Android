@@ -41,9 +41,6 @@ class ProxyServer(
     private val wsPool = WsPool(poolSize)
     val stats: Stats get() = wsPool.stats
 
-    // WS blacklist: DCs where WS always returns 302
-    private val wsBlacklist = ConcurrentHashMap.newKeySet<Pair<Int, Boolean>>()
-
     // Failure cooldown tracking
     private val dcFailUntil = ConcurrentHashMap<Pair<Int, Boolean>, Long>()
     private val DC_FAIL_COOLDOWN = 30_000L  // 30 seconds
@@ -256,12 +253,6 @@ class ProxyServer(
             val now = System.currentTimeMillis()
             val mediaTag = if (isMedia) " media" else ""
 
-            // WS blacklist check
-            if (dcKey in wsBlacklist) {
-                tcpFallback(input, output, dst, dstPort, initData, label, client, dc, isMedia)
-                return
-            }
-
             // Try WebSocket
             val failUntil = dcFailUntil[dcKey] ?: 0L
             val wsTimeout = if (now < failUntil) WS_FAIL_TIMEOUT else 10000
@@ -269,8 +260,6 @@ class ProxyServer(
             val domains = TelegramDC.wsDomains(dc, isMedia)
             val target = wsAddress(domains.first(), dcOpt[dc]!!)
             var ws: RawWebSocket? = null
-            var wsFailedRedirect = false
-            var allRedirects = true
 
             // Try pool first
             ws = wsPool.get(dc, isMedia, target, domains)
@@ -286,14 +275,11 @@ class ProxyServer(
                         log("[$label] DC$dc$mediaTag ($dst:$dstPort) -> $url via $address")
                         try {
                             ws = RawWebSocket.connect(address, domain, timeoutMs = wsTimeout.coerceAtMost(4000))
-                            allRedirects = false
                             break
                         } catch (e: WsHandshakeError) {
                             stats.wsErrors.incrementAndGet()
-                            if (e.isRedirect) wsFailedRedirect = true else allRedirects = false
                         } catch (e: Exception) {
                             stats.wsErrors.incrementAndGet()
-                            allRedirects = false
                         }
                     }
                     if (ws != null) break
@@ -302,12 +288,9 @@ class ProxyServer(
 
             // WS failed → fallback
             if (ws == null) {
-                if (wsFailedRedirect && allRedirects) {
-                    wsBlacklist.add(dcKey)
-                } else {
-                    dcFailUntil[dcKey] = now + DC_FAIL_COOLDOWN
-                    log("[$label] DC$dc$mediaTag WS cooldown for ${DC_FAIL_COOLDOWN / 1000}s")
-                }
+                // A redirect or timeout is transient: retry after handover/new DNS.
+                dcFailUntil[dcKey] = now + DC_FAIL_COOLDOWN
+                log("[$label] DC$dc$mediaTag WS cooldown for ${DC_FAIL_COOLDOWN / 1000}s")
                 log("[$label] DC$dc$mediaTag -> TCP fallback to $dst:$dstPort")
                 tcpFallback(input, output, dst, dstPort, initData, label, client, dc, isMedia)
                 return
