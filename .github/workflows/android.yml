@@ -75,7 +75,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: VPN smoke test from a separate application UID
-        timeout-minutes: 12
+        timeout-minutes: 6
+        continue-on-error: true
         env:
           ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: '2'
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
@@ -91,6 +92,22 @@ jobs:
             trap 'kill "$(cat "$RUNNER_TEMP/privetzapret-udp-echo.pid")" 2>/dev/null || true' EXIT
             ./gradlew :app:installDebug :probe:connectedDebugAndroidTest --no-daemon --console=plain
             adb pull /sdcard/Download/privetzapret screenshots
+      - name: Verify VPN smoke test report
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          reports = list(Path('probe/build/outputs/androidTest-results/connected').rglob('TEST-*.xml'))
+          if not reports:
+              raise SystemExit('VPN smoke test report is missing')
+          for report in reports:
+              suite = ElementTree.parse(report).getroot()
+              if any(int(suite.get(key, '0')) for key in ('failures', 'errors', 'skipped')):
+                  raise SystemExit(f'VPN smoke test failed: {report}')
+          print(f'VPN smoke tests passed: {len(reports)} report(s)')
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
