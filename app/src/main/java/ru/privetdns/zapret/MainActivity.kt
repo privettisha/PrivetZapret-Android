@@ -29,6 +29,8 @@ class MainActivity : Activity() {
     private lateinit var power: Button
     private lateinit var headline: TextView
     private lateinit var statusLine: TextView
+    private lateinit var healthLine: TextView
+    private lateinit var connectionTest: Button
     private lateinit var mode: Switch
     private lateinit var dnsInput: EditText
     private lateinit var fallbackInput: EditText
@@ -57,7 +59,8 @@ class MainActivity : Activity() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             state = intent.getStringExtra("state") ?: "off"
-            renderState(intent.getStringExtra("detail") ?: "", intent.getStringExtra("dns") ?: "")
+            renderState(intent.getStringExtra("detail") ?: "", intent.getStringExtra("dns") ?: "",
+                intent.getStringExtra("health") ?: "")
         }
     }
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
@@ -124,7 +127,7 @@ class MainActivity : Activity() {
             nav.add(tab); navigation.addView(tab, LinearLayout.LayoutParams(0, -2, 1f))
         }
         root.addView(navigation); setContentView(root)
-        selectTab(savedInstanceState?.getInt("tab") ?: 0); refreshSettings(); renderState("Готов к подключению", "")
+        selectTab(savedInstanceState?.getInt("tab") ?: 0); refreshSettings(); renderState("Готов к подключению", "", "")
         if (storageError) message("Не удалось прочитать сохранённый профиль. Введите DNS заново и сохраните его; старые настройки не были заменены.")
     }
     private fun homePage() = page("", "") {
@@ -137,6 +140,13 @@ class MainActivity : Activity() {
         }
         addView(hero); space(16)
         statusLine = text("Готов к подключению", 14, muted); addView(statusLine)
+        space(8)
+        healthLine = text("", 14, muted); addView(healthLine)
+        space(10)
+        connectionTest = button("Проверить HTTPS") {
+            startService(Intent(this@MainActivity, TunnelService::class.java).setAction(TunnelService.CHECK))
+        }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }
+        addView(connectionTest, LinearLayout.LayoutParams(-1, -2))
         space(18)
         val services = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER }
         listOf(
@@ -196,7 +206,7 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
         }; addView(quic)
         label("О ПРОЕКТЕ")
-        addView(text("PrivetZapret Android · 0.2.0 beta", 14, muted)); space(12)
+        addView(text("PrivetZapret Android · 0.2.1 beta", 14, muted)); space(12)
         addView(button("Обновить приложение") {
             openLink("https://github.com/privettisha/PrivetZapret-Android/releases/latest/download/PrivetZapret-Android.apk")
         }, LinearLayout.LayoutParams(-1, -2))
@@ -263,7 +273,7 @@ class MainActivity : Activity() {
         if (prepare != null) startActivityForResult(prepare, 42) else connect()
     }
     private fun connect() {
-        state = "starting"; renderState("Подключаем защищённый DNS", "")
+        state = "starting"; renderState("Подключаем защищённый DNS", "", "")
         startForegroundService(Intent(this, TunnelService::class.java).setAction(TunnelService.START))
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 43)
@@ -273,12 +283,14 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 42 && resultCode == RESULT_OK) connect()
     }
-    private fun renderState(detail: String, dns: String) {
+    private fun renderState(detail: String, dns: String, health: String) {
         val off = state == "off"
         headline.text = when (state) { "on" -> "Вы подключены"; "starting" -> "Подключаем…"; "stopping" -> "Отключаем…"; else -> "Можно начинать" }
         power.text = if (off) "Подключить" else if (state == "starting") "Отменить" else "Отключить"
         power.isEnabled = state != "stopping"
         statusLine.text = listOf(detail, dns).filter { it.isNotBlank() }.joinToString(" · ")
+        healthLine.text = health
+        connectionTest.isEnabled = state == "on" && !health.startsWith("Проверяем")
         mode.isEnabled = off; quic.isEnabled = off
         for (i in 0 until strategyGroup.childCount) strategyGroup.getChildAt(i).isEnabled = off
         listOf(dnsInput, fallbackInput, bootstrapInput, save).forEach { it.isEnabled = off }

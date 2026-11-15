@@ -2,6 +2,7 @@ package ru.privetdns.zapret.net
 
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
+import java.net.InetAddress
 import java.security.SecureRandom
 
 object DnsWire {
@@ -69,4 +70,41 @@ object DnsWire {
         return bytes.toByteArray()
     }
     fun hasAnswer(response: ByteArray) = response.size >= 12 && response[3].toInt() and 15 == 0 && u16(response, 6) > 0
+
+    /** Extract only literal A/AAAA answers from a response to our own query. */
+    fun addresses(query: ByteArray, response: ByteArray): List<InetAddress> {
+        checkResponse(query, response)
+        if (!hasAnswer(response)) return emptyList()
+        fun skipName(start: Int): Int {
+            var p = start
+            repeat(128) {
+                require(p < response.size)
+                val len = response[p++].toInt() and 255
+                when {
+                    len == 0 -> return p
+                    len and 192 == 192 -> { require(p < response.size); return p + 1 }
+                    len <= 63 -> { require(p + len <= response.size); p += len }
+                    else -> throw IllegalArgumentException("Invalid DNS name")
+                }
+            }
+            throw IllegalArgumentException("DNS name too long")
+        }
+        var p = skipName(12)
+        require(p + 4 <= response.size)
+        p += 4
+        val result = ArrayList<InetAddress>()
+        repeat(u16(response, 6).coerceAtMost(64)) {
+            p = skipName(p)
+            require(p + 10 <= response.size)
+            val type = u16(response, p)
+            val klass = u16(response, p + 2)
+            val length = u16(response, p + 8)
+            p += 10
+            require(p + length <= response.size)
+            if (klass == 1 && ((type == 1 && length == 4) || (type == 28 && length == 16)))
+                result.add(InetAddress.getByAddress(response.copyOfRange(p, p + length)))
+            p += length
+        }
+        return result
+    }
 }

@@ -10,6 +10,7 @@ import java.net.*
 import java.net.Proxy
 import java.security.SecureRandom
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import ru.privetdns.zapret.net.*
 
@@ -18,14 +19,18 @@ class TunnelService : VpnService() {
         const val START = "ru.privetdns.zapret.START"
         const val STOP = "ru.privetdns.zapret.STOP"
         const val QUERY = "ru.privetdns.zapret.QUERY"
+        const val CHECK = "ru.privetdns.zapret.CHECK"
         const val STATUS = "ru.privetdns.zapret.STATUS"
         const val DNS_IP = "10.111.0.2"
     }
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newSingleThreadScheduledExecutor()
     private val stopping = AtomicBoolean(false)
+    private val probeQueued = AtomicBoolean(false)
     @Volatile private var state = "off"
     @Volatile private var detail = "Готов к подключению"
     @Volatile private var dnsStatus = ""
+    @Volatile private var health = ""
+    @Volatile private var nativePort = 0
     @Volatile private var tun: ParcelFileDescriptor? = null
     @Volatile private var dns: EncryptedDns? = null
     @Volatile private var gateway: SocksGateway? = null
@@ -36,6 +41,7 @@ class TunnelService : VpnService() {
         when (intent?.action) {
             STOP -> stopEngine()
             QUERY -> { publish(); if (state == "off" && !nativeUsed) stopSelf() }
+            CHECK -> if (state == "on") requestProbe()
             START -> {
                 if (state != "off") { publish(); return START_NOT_STICKY }
                 state = "starting"; detail = "Подключаем защищённый DNS"; publish()
@@ -54,7 +60,7 @@ class TunnelService : VpnService() {
     private fun startEngine() {
         val config = Settings.load(this)
         val profile = config.profile()
-        val nativePort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        nativePort = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
         val args = mutableListOf("byedpi", "--ip", "127.0.0.1", "--port", nativePort.toString(), "--max-conn", "256", "--no-domain")
         if (!config.dnsOnly) {
             // QUIC/TikTok and Telegram media must use the same DPI engine as TCP. The first
@@ -136,17 +142,51 @@ class TunnelService : VpnService() {
             state = "on"
             detail = if (config.dnsOnly) "Защищённый DNS подключён" else "Локальный обход и DNS подключены"
             publish(); getSystemService(NotificationManager::class.java).notify(1, notification())
+            val cm = getSystemService(ConnectivityManager::class.java)
+            val watcher = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) { requestProbe(2) }
+                override fun onLost(network: Network) { requestProbe(2) }
+            }
+            runCatching {
+                cm.registerNetworkCallback(NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), watcher)
+                callback = watcher
+            }
+            requestProbe()
+            worker.scheduleWithFixedDelay({ if (state == "on") requestProbe() }, 120, 120, TimeUnit.SECONDS)
         }
+    }
+
+    private fun requestProbe(delaySeconds: Long = 0) {
+        if (state != "on" || stopping.get() || !probeQueued.compareAndSet(false, true)) return
+        try {
+            worker.schedule({
+                try { checkConnectivity() } finally { probeQueued.set(false) }
+            }, delaySeconds, TimeUnit.SECONDS)
+        } catch (_: java.util.concurrent.RejectedExecutionException) { probeQueued.set(false) }
+    }
+
+    private fun checkConnectivity() {
+        if (state != "on" || stopping.get()) return
+        health = "Проверяем HTTPS через локальный движок…"; publish()
+        val resolver = dns ?: return
+        val result = runCatching { ReachabilityProbe(resolver, nativePort).check() }
+        if (state != "on" || stopping.get()) return
+        health = if (result.isSuccess) "HTTPS отвечает через ${result.getOrThrow()}"
+            else "Проверка HTTPS не прошла — проверьте доступ в приложениях"
+        publish(); getSystemService(NotificationManager::class.java).notify(1, notification())
     }
     private fun notification(): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(this, 1, Intent(this, TunnelService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return Notification.Builder(this, "connection").setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("PrivetZapret").setContentText(detail).setContentIntent(open).setOngoing(true)
+            .setContentTitle("PrivetZapret").setContentText(if (health.isBlank()) detail else health).setContentIntent(open).setOngoing(true)
             .addAction(Notification.Action.Builder(null, "Отключить", stop).build()).build()
     }
     private fun publish() {
-        sendBroadcast(Intent(STATUS).setPackage(packageName).putExtra("state", state).putExtra("detail", detail).putExtra("dns", dnsStatus), "ru.privetdns.zapret.INTERNAL")
+        sendBroadcast(Intent(STATUS).setPackage(packageName).putExtra("state", state).putExtra("detail", detail)
+            .putExtra("dns", dnsStatus).putExtra("health", health), "ru.privetdns.zapret.INTERNAL")
     }
     @Synchronized private fun stopEngine(error: String? = null) {
         if (!stopping.compareAndSet(false, true)) return
@@ -156,7 +196,7 @@ class TunnelService : VpnService() {
         runCatching { tun?.close() }; runCatching { gateway?.close() }; runCatching { dns?.close() }
         worker.shutdownNow()
         stopForeground(STOP_FOREGROUND_REMOVE)
-        state = "off"; detail = error ?: "Готов к подключению"; dnsStatus = ""; publish(); stopSelf()
+        state = "off"; detail = error ?: "Готов к подключению"; dnsStatus = ""; health = ""; publish(); stopSelf()
         // ByeDPI has process-global state. Only the isolated :engine worker is terminated.
         if (nativeUsed) android.os.Process.killProcess(android.os.Process.myPid())
     }

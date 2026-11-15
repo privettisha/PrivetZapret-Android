@@ -70,6 +70,7 @@ class VpnSmokeTest {
         repeat(2) { iteration ->
             tap("Подключить")
             assertTrue("VPN startup failed", device.wait(Until.hasObject(By.text("Вы подключены")), 40000))
+            assertTrue("HTTPS health probe failed", device.wait(Until.hasObject(By.textContains("HTTPS отвечает через")), 40000))
             screenshot("04-connected-$iteration")
             checkDns()
             checkUdpRelay()

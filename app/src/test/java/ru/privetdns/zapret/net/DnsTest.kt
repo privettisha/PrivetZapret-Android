@@ -59,6 +59,13 @@ class DnsTest {
         assertEquals(2, failure[3].toInt() and 15)
         assertFalse(DnsWire.hasAnswer(failure))
     }
+    @Test fun extractsCompressedAddressAnswersWithoutTrustingMalformedData() {
+        val q = DnsWire.query("example.com")
+        val header = q.clone().apply { this[2] = 129.toByte(); this[7] = 1 }
+        val answer = byteArrayOf(0xc0.toByte(), 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 93, -72, -41, 14)
+        assertEquals("93.184.215.14", DnsWire.addresses(q, header + answer).single().hostAddress)
+        assertThrows(IllegalArgumentException::class.java) { DnsWire.addresses(q, header + answer.dropLast(1)) }
+    }
     private fun tlsServer(block: (MockWebServer, OkHttpClient) -> Unit) {
         val certificate = HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
         val serverCert = HandshakeCertificates.Builder().heldCertificate(certificate).build()
@@ -107,7 +114,7 @@ class DnsTest {
         val serverCert = HandshakeCertificates.Builder().heldCertificate(cert).build()
         val clientCert = HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()
         val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-        serverCert.sslContext().serverSocketFactory.createServerSocket(0).use { server ->
+        serverCert.sslContext().serverSocketFactory.createServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1")).use { server ->
             val q = DnsWire.query("example.com"); val a = DnsWire.failure(q)
             val task = executor.submit {
                 server.accept().use { s ->
@@ -120,6 +127,27 @@ class DnsTest {
             EncryptedDns(DnsProfile.parse("tls://localhost:${server.localPort}", "", ""), tlsFactory = clientCert.sslSocketFactory()).use {
                 assertArrayEquals(a, it.resolve(q))
             }
+            task.get(3, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        executor.shutdownNow()
+    }
+    @Test fun dotRetriesNextBootstrapAddress() {
+        val cert = HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
+        val serverCert = HandshakeCertificates.Builder().heldCertificate(cert).build()
+        val clientCert = HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        serverCert.sslContext().serverSocketFactory.createServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1")).use { server ->
+            val q = DnsWire.query("example.com"); val a = DnsWire.failure(q)
+            val task = executor.submit {
+                server.accept().use { s ->
+                    val input = java.io.DataInputStream(s.getInputStream())
+                    val received = ByteArray(input.readUnsignedShort()); input.readFully(received)
+                    java.io.DataOutputStream(s.getOutputStream()).apply { writeShort(a.size); write(a); flush() }
+                }
+            }
+            val endpoint = DnsEndpoint.parse("tls://localhost:${server.localPort}")
+            val profile = DnsProfile(endpoint, null, listOf(java.net.InetAddress.getByName("127.0.0.2"), java.net.InetAddress.getByName("127.0.0.1")))
+            EncryptedDns(profile, tlsFactory = clientCert.sslSocketFactory()).use { assertArrayEquals(a, it.resolve(q)) }
             task.get(3, java.util.concurrent.TimeUnit.SECONDS)
         }
         executor.shutdownNow()

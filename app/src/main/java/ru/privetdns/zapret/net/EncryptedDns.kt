@@ -104,22 +104,28 @@ class EncryptedDns(
         }
     }
     private fun dot(endpoint: DnsEndpoint, query: ByteArray): ByteArray {
-        // Use one bounded connection per query. TLS verification always uses the original name.
-        val address = lookup(endpoint.host).firstOrNull() ?: throw IOException("DNS bootstrap failed")
-        val raw = Socket(proxy)
-        sockets.add(raw)
-        try {
-            raw.connect(InetSocketAddress(address, endpoint.port), 4000); raw.soTimeout = 5000
-            (tlsFactory.createSocket(raw, endpoint.host, endpoint.port, true) as SSLSocket).use { tls ->
-                tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
-                tls.startHandshake()
-                DataOutputStream(tls.outputStream).apply { writeShort(query.size); write(query); flush() }
-                val input = DataInputStream(tls.inputStream)
-                val length = input.readUnsignedShort()
-                if (length < 12) throw IOException("Invalid DNS frame")
-                return ByteArray(length).also { input.readFully(it) }
-            }
-        } finally { sockets.remove(raw); runCatching { raw.close() } }
+        // Try every configured/bootstrap address, keeping the original TLS name and certificate check.
+        val addresses = lookup(endpoint.host)
+        if (addresses.isEmpty()) throw IOException("DNS bootstrap failed")
+        for (address in addresses) {
+            val raw = Socket(proxy)
+            sockets.add(raw)
+            try {
+                raw.connect(InetSocketAddress(address, endpoint.port), 4000); raw.soTimeout = 5000
+                (tlsFactory.createSocket(raw, endpoint.host, endpoint.port, true) as SSLSocket).use { tls ->
+                    tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                    tls.startHandshake()
+                    DataOutputStream(tls.outputStream).apply { writeShort(query.size); write(query); flush() }
+                    val input = DataInputStream(tls.inputStream)
+                    val length = input.readUnsignedShort()
+                    if (length < 12) throw IOException("Invalid DNS frame")
+                    return ByteArray(length).also { input.readFully(it) }
+                }
+            } catch (_: IOException) {
+                if (closed) break
+            } finally { sockets.remove(raw); runCatching { raw.close() } }
+        }
+        throw IOException("DoT server unavailable on all addresses")
     }
     override fun close() {
         closed = true
