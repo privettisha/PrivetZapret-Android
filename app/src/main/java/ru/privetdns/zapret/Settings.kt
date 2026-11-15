@@ -19,7 +19,7 @@ class Settings(
     val dnsOnly: Boolean = false,
     val strategy: String = "auto",
     val blockQuic: Boolean = false,
-    val desktopQuic: Boolean = false
+    val desktopQuic: Boolean = true
 ) {
     fun profile() = DnsProfile.parse(dns, fallback, bootstrap)
     companion object {
@@ -44,14 +44,16 @@ class Settings(
             val blockQuic = if (data.optInt("schema", 1) >= 2) data.optBoolean("blockQuic", false) else false
             return Settings(data.getString("dns"), data.optString("fallback"), data.optString("bootstrap"),
                 data.optBoolean("dnsOnly"), data.optString("strategy", "auto"), blockQuic,
-                data.optBoolean("desktopQuic", false))
+                // Older builds saved the experimental switch as false by default. Move
+                // those profiles to a real QUIC Initial; v4 preserves later user choice.
+                if (data.optInt("schema", 1) >= 4) data.optBoolean("desktopQuic", true) else true)
         }
         fun save(context: Context, settings: Settings) {
             settings.profile()
             val data = JSONObject().put("dns", settings.dns).put("fallback", settings.fallback)
                 .put("bootstrap", settings.bootstrap).put("dnsOnly", settings.dnsOnly)
                 .put("strategy", settings.strategy).put("blockQuic", settings.blockQuic)
-                .put("desktopQuic", settings.desktopQuic).put("schema", 3)
+                .put("desktopQuic", settings.desktopQuic).put("schema", 4)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
             val bytes = cipher.doFinal(data.toString().toByteArray())
             val file = android.util.AtomicFile(java.io.File(context.filesDir, "profile.bin"))

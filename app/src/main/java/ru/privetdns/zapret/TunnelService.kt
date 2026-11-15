@@ -74,7 +74,7 @@ class TunnelService : VpnService() {
             if (config.desktopQuic && !config.blockQuic) {
                 val fake = File(filesDir, "quic_initial_www_google_com.bin")
                 assets.open(fake.name).use { input -> fake.outputStream().use { input.copyTo(it) } }
-                args.addAll(listOf("--udp-fake", "11", "--fake-data", fake.absolutePath))
+                args.addAll(listOf("--udp-fake", "6", "--fake-data", fake.absolutePath))
             } else {
                 args.addAll(listOf("--udp-fake", "2"))
             }
@@ -194,10 +194,14 @@ class TunnelService : VpnService() {
         if (state != "on" || stopping.get()) return
         health = "Проверяем HTTPS через локальный движок…"; publish()
         val resolver = dns ?: return
-        val result = runCatching { ReachabilityProbe(resolver, nativePort).check() }
+        val probe = ReachabilityProbe(resolver, nativePort)
+        val result = runCatching { probe.check() }
         if (state != "on" || stopping.get()) return
-        health = if (result.isSuccess) "HTTPS отвечает через ${result.getOrThrow()}"
-            else "Проверка HTTPS не прошла — проверьте доступ в приложениях"
+        health = if (result.isSuccess) {
+            val youtube = runCatching { probe.checkYoutube() }.getOrDefault(false)
+            if (youtube) "HTTPS и YouTube API/CDN отвечают"
+            else "HTTPS отвечает; YouTube API/CDN пока недоступны"
+        } else "Проверка HTTPS не прошла — проверьте доступ в приложениях"
         publish(); getSystemService(NotificationManager::class.java).notify(1, notification())
     }
     private fun notification(): Notification {

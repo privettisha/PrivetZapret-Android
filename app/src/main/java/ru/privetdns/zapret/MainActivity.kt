@@ -177,7 +177,6 @@ class MainActivity : Activity() {
             catch (_: Exception) { message("Откройте Telegram → Настройки → Данные и память → Прокси: SOCKS5, 127.0.0.1, порт 14430.") }
         }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }
         addView(telegramConnect, LinearLayout.LayoutParams(-1, -2))
-        addView(text("Для сообщений и медиа Telegram включите локальный SOCKS5-прокси в Telegram. Звонки проверяются отдельно.", 13, muted))
         label("РЕЖИМ")
         mode = Switch(this@MainActivity).apply {
             text = "Только DNS"; textSize = 17f; setTextColor(ink); minHeight = dp(48)
@@ -218,12 +217,11 @@ class MainActivity : Activity() {
         }; addView(quic)
         space(12)
         desktopQuic = Switch(this@MainActivity).apply {
-            text = "QUIC-приманка из версии ПК"; textSize = 17f; setTextColor(ink); minHeight = dp(52)
+            text = "Улучшенный QUIC"; textSize = 17f; setTextColor(ink); minHeight = dp(52)
             setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
         }; addView(desktopQuic)
-        addView(text("Эксперимент для TikTok: приманка QUIC из версии ПК только в начале UDP/443. Переподключитесь после смены профиля.", 13, muted))
         label("О ПРОЕКТЕ")
-        addView(text("PrivetZapret Android · 0.3.0 beta", 14, muted)); space(12)
+        addView(text("PrivetZapret Android · 0.3.1 beta", 14, muted)); space(12)
         addView(button("Обновить приложение") {
             openLink("https://github.com/privettisha/PrivetZapret-Android/releases/latest/download/PrivetZapret-Android.apk")
         }, LinearLayout.LayoutParams(-1, -2))

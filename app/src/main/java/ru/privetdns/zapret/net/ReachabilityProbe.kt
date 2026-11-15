@@ -28,6 +28,11 @@ class ReachabilityProbe(
         throw IOException("No HTTPS probe returned through the local engine")
     }
 
+    /** Verifies both YouTube control traffic and a Googlevideo CDN response. */
+    fun checkYoutube(): Boolean =
+        runCatching { check(Target("youtubei.googleapis.com", "/generate_204", 204)) }.getOrDefault(false) &&
+            runCatching { check(Target("redirector.googlevideo.com", "/report_mapping", 200)) }.getOrDefault(false)
+
     private fun check(target: Target): Boolean {
         val query = DnsWire.query(target.host)
         val addresses = DnsWire.addresses(query, resolver.resolve(query))

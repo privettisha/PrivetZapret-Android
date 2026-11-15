@@ -21,8 +21,13 @@ import java.util.concurrent.Semaphore
 class ProxyServer(
     private val host: String = "127.0.0.1",
     private val port: Int = 1080,
-    private val dcOpt: Map<Int, String> = mapOf(2 to "149.154.167.220", 4 to "149.154.167.220"),
-    private val poolSize: Int = 4,
+    private val dcOpt: Map<Int, String> = mapOf(
+        1 to "149.154.175.50", 2 to "149.154.167.220", 3 to "149.154.175.100",
+        4 to "149.154.167.91", 5 to "91.108.56.100", 203 to "149.154.167.220"
+    ),
+    // Idle WebSockets can be closed remotely while still looking open locally;
+    // a fresh route is safer on mobile network handovers.
+    private val poolSize: Int = 0,
     private val bufKb: Int = 256,
     private val onLog: ((String) -> Unit)? = null
 ) {
@@ -68,8 +73,6 @@ class ProxyServer(
             try {
                 log("Telegram WS Bridge Proxy listening on $host:$port")
                 log("Target DCs: ${dcOpt.entries.joinToString { "DC${it.key}:${it.value}" }}")
-
-                wsPool.warmup(dcOpt)
 
                 while (running.get()) {
                     try {
@@ -264,7 +267,7 @@ class ProxyServer(
             val wsTimeout = if (now < failUntil) WS_FAIL_TIMEOUT else 10000
 
             val domains = TelegramDC.wsDomains(dc, isMedia)
-            val target = dcOpt[dc]!!
+            val target = wsAddress(domains.first(), dcOpt[dc]!!)
             var ws: RawWebSocket? = null
             var wsFailedRedirect = false
             var allRedirects = true
@@ -277,23 +280,23 @@ class ProxyServer(
                 // Fresh connection
                 for (domain in domains) {
                     val url = "wss://$domain/apiws"
-                    log("[$label] DC$dc$mediaTag ($dst:$dstPort) -> $url via $target")
-                    try {
-                        ws = RawWebSocket.connect(target, domain, timeoutMs = wsTimeout)
-                        allRedirects = false
-                        break
-                    } catch (e: WsHandshakeError) {
-                        stats.wsErrors.incrementAndGet()
-                        if (e.isRedirect) {
-                            wsFailedRedirect = true
-                            continue
-                        } else {
+                    // The IP returned for each WSS name can change independently. The
+                    // old fixed DC2 IP made every other DC depend on a single endpoint.
+                    for (address in listOf(wsAddress(domain, target), dcOpt[dc]!!).distinct()) {
+                        log("[$label] DC$dc$mediaTag ($dst:$dstPort) -> $url via $address")
+                        try {
+                            ws = RawWebSocket.connect(address, domain, timeoutMs = wsTimeout.coerceAtMost(4000))
+                            allRedirects = false
+                            break
+                        } catch (e: WsHandshakeError) {
+                            stats.wsErrors.incrementAndGet()
+                            if (e.isRedirect) wsFailedRedirect = true else allRedirects = false
+                        } catch (e: Exception) {
+                            stats.wsErrors.incrementAndGet()
                             allRedirects = false
                         }
-                    } catch (e: Exception) {
-                        stats.wsErrors.incrementAndGet()
-                        allRedirects = false
                     }
+                    if (ws != null) break
                 }
             }
 
@@ -332,6 +335,9 @@ class ProxyServer(
             try { client.close() } catch (_: Exception) {}
         }
     }
+
+    private fun wsAddress(domain: String, fallback: String): String =
+        runCatching { OutboundSocket.resolveName?.invoke(domain)?.hostAddress }.getOrNull() ?: fallback
 
     // --- TCP fallback ---
 
