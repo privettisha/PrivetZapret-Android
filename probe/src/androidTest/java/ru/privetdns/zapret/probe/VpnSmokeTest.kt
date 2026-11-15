@@ -92,12 +92,12 @@ class VpnSmokeTest {
         repeat(2) { iteration ->
             if (iteration == 1) {
                 tap("Настройки")
-                tap("QUIC-приманка из версии ПК")
+                tap("Улучшенный QUIC")
                 tap("Главная")
             }
             tap("Подключить")
             assertTrue("VPN startup failed", device.wait(Until.hasObject(By.text("Вы подключены")), 40000))
-            assertTrue("HTTPS health probe failed", device.wait(Until.hasObject(By.textContains("HTTPS отвечает через")), 40000))
+            assertTrue("HTTPS health probe failed", device.wait(Until.hasObject(By.textContains("YouTube API/CDN")), 40000))
             screenshot("04-connected-$iteration")
             checkDns()
             checkTelegramProxy()
