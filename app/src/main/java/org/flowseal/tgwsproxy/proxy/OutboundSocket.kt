@@ -15,7 +15,7 @@ internal object OutboundSocket {
     else Socket()
 
     fun connect(socket: Socket, host: String, port: Int, timeout: Int) {
-        val address = if (host.matches(Regex("[0-9.]+"))) InetAddress.getByName(host)
+        val address = if (host.contains(':') || host.matches(Regex("[0-9.]+"))) InetAddress.getByName(host)
             else resolveName?.invoke(host) ?: throw java.io.IOException("Encrypted DNS unavailable")
         socket.connect(InetSocketAddress(address, port), timeout)
     }

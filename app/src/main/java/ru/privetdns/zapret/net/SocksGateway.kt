@@ -19,6 +19,9 @@ class SocksGateway(
     private val connections = ConcurrentHashMap.newKeySet<Closeable>()
     private val slots = Semaphore(96)
     private val udpSlots = Semaphore(128)
+    private val udp443Health = Udp443Health()
+    private inner class UdpAssociation(val flows: ConcurrentHashMap<String, NativeUdpFlow>)
+    private val udpAssociations = ConcurrentHashMap.newKeySet<UdpAssociation>()
     private val workers = Executors.newCachedThreadPool { runnable ->
         Thread(null, runnable, "pzp-io", 256 * 1024L).apply { isDaemon = true }
     }
@@ -178,6 +181,8 @@ class SocksGateway(
     private fun udp(control: Socket, requestedPort: Int) {
         val relay = DatagramSocket(InetSocketAddress("127.0.0.1", 0)); connections.add(relay)
         val flows = ConcurrentHashMap<String, NativeUdpFlow>()
+        val association = UdpAssociation(flows)
+        udpAssociations.add(association)
         reply(control.getOutputStream(), port = relay.localPort)
         control.soTimeout = 0
         val receiver = workers.submit {
@@ -211,12 +216,16 @@ class SocksGateway(
                     // Hev normally sends IP addresses. Refuse domains so ByeDPI never uses system DNS.
                     if (destination.wire[0].toInt() == 3) continue
                     val key = "${destination.host}:${destination.port}"
+                    if (destination.port == 443 && !udp443Health.allow(key, payload)) continue
                     var flow = flows[key]
                     if (flow == null) {
                         synchronized(flows) {
                             flow = flows[key]
                             if (flow == null && udpSlots.tryAcquire()) {
-                                val created = try { NativeUdpFlow(::sendFrame) }
+                                val created = try { NativeUdpFlow { response ->
+                                    if (destination.port == 443) udp443Health.received(key)
+                                    sendFrame(response)
+                                } }
                                 catch (_: Exception) { udpSlots.release(); null }
                                 if (created != null) {
                                     flow = created; flows[key] = created
@@ -237,8 +246,19 @@ class SocksGateway(
         }
         try { while (control.getInputStream().read() != -1) { } }
         finally {
+            udpAssociations.remove(association)
             relay.close(); connections.remove(relay)
             flows.values.forEach { it.close() }; receiver.cancel(true)
+        }
+    }
+    fun onNetworkChanged() {
+        udp443Health.reset()
+        udpAssociations.forEach { association ->
+            val flows = association.flows
+            synchronized(flows) {
+                flows.values.forEach { it.close() }
+                flows.clear()
+            }
         }
     }
     override fun close() {

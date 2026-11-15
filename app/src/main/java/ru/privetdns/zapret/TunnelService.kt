@@ -13,6 +13,7 @@ import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import ru.privetdns.zapret.net.*
 import org.flowseal.tgwsproxy.proxy.OutboundSocket
 import org.flowseal.tgwsproxy.proxy.ProxyServer
@@ -166,14 +167,26 @@ class TunnelService : VpnService() {
             detail = if (config.dnsOnly) "Защищённый DNS подключён" else "Локальный обход и DNS подключены"
             publish(); getSystemService(NotificationManager::class.java).notify(1, notification())
             val cm = getSystemService(ConnectivityManager::class.java)
+            val activeNetwork = AtomicReference<Network?>()
             val watcher = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { requestProbe(2) }
-                override fun onLost(network: Network) { requestProbe(2) }
+                override fun onAvailable(network: Network) {
+                    val previous = activeNetwork.getAndSet(network)
+                    if (previous != null && previous != network) {
+                        gateway?.onNetworkChanged()
+                        telegramProxy?.onNetworkChanged()
+                    }
+                    requestProbe(2)
+                }
+                override fun onLost(network: Network) {
+                    if (activeNetwork.compareAndSet(network, null)) {
+                        gateway?.onNetworkChanged()
+                        telegramProxy?.onNetworkChanged()
+                    }
+                    requestProbe(2)
+                }
             }
             runCatching {
-                cm.registerNetworkCallback(NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), watcher)
+                cm.registerDefaultNetworkCallback(watcher)
                 callback = watcher
             }
             requestProbe()

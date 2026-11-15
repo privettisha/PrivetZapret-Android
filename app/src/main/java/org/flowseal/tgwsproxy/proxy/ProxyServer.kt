@@ -107,6 +107,12 @@ class ProxyServer(
         log("Proxy stopped")
     }
 
+    /** Force Telegram to reconnect on the new underlying Wi-Fi/mobile network. */
+    fun onNetworkChanged() {
+        dcFailUntil.clear()
+        clients.forEach { runCatching { it.close() } }
+    }
+
     val isRunning: Boolean get() = running.get()
 
     private fun log(msg: String) {
@@ -176,16 +182,9 @@ class ProxyServer(
             val portBytes = readExactly(input, 2)
             val dstPort = ((portBytes[0].toInt() and 0xFF) shl 8) or (portBytes[1].toInt() and 0xFF)
 
-            // IPv6 not supported
-            if (dst.contains(':')) {
-                output.write(socks5Reply(0x05))
-                output.flush()
-                client.close()
-                return
-            }
-
-            // Non-Telegram IP → direct passthrough
-            if (!dst.matches(Regex("[0-9.]+")) || !TelegramDC.isTelegramIp(dst)) {
+            // Telegram can prefer IPv6 on mobile data; rejecting all IPv6 here
+            // prevented the local WebSocket bridge from ever seeing MTProto.
+            if (!TelegramDC.isTelegramIp(dst)) {
                 stats.connectionsPassthrough.incrementAndGet()
                 try {
                     val remote = OutboundSocket.create()
@@ -234,8 +233,7 @@ class ProxyServer(
             var initPatched = false
 
             // Android with useSecret=0 has random dc_id — patch it
-            if (dc == null && dst in TelegramDC.IP_TO_DC) {
-                val (resolvedDc, resolvedMedia) = TelegramDC.IP_TO_DC[dst]!!
+            if (dc == null) TelegramDC.dcFromIp(dst)?.let { (resolvedDc, resolvedMedia) ->
                 dc = resolvedDc
                 isMedia = resolvedMedia
                 if (dc in dcOpt) {

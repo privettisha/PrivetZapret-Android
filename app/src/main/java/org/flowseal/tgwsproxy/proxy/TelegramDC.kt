@@ -59,11 +59,33 @@ object TelegramDC {
 
     fun isTelegramIp(ip: String): Boolean {
         return try {
-            val n = ipToLong(ip)
-            TG_RANGES.any { (lo, hi) -> n in lo..hi }
+            if (!ip.contains(':') && !ip.matches(Regex("[0-9.]+"))) return false
+            if (ip in IP_TO_DC) return true
+            val bytes = InetAddress.getByName(ip).address
+            if (bytes.size == 4) {
+                val n = ByteBuffer.wrap(bytes).int.toLong() and 0xFFFFFFFFL
+                TG_RANGES.any { (lo, hi) -> n in lo..hi }
+            } else {
+                // Telegram's published IPv6 DC ranges, also used by its desktop clients.
+                bytes.size == 16 && bytes[0] == 0x20.toByte() && bytes[1] == 0x01.toByte() &&
+                    ((bytes[2] == 0x06.toByte() && bytes[3] == 0x7c.toByte() &&
+                        bytes[4] == 0x04.toByte() && bytes[5] == 0xe8.toByte()) ||
+                     (bytes[2] == 0x0b.toByte() && bytes[3] == 0x28.toByte() &&
+                        (bytes[4] == 0xf2.toByte() &&
+                         (bytes[5] == 0x3d.toByte() || bytes[5] == 0x3f.toByte()))))
+            }
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun dcFromIp(ip: String): Pair<Int, Boolean>? {
+        IP_TO_DC[ip]?.let { return it }
+        if (!isTelegramIp(ip) || !ip.contains(':')) return null
+        val bytes = runCatching { InetAddress.getByName(ip).address }.getOrNull() ?: return null
+        // The fourth hextet in Telegram's built-in IPv6 addresses is f001..f005.
+        val dc = if (bytes.size == 16 && bytes[6] == 0xf0.toByte()) bytes[7].toInt() and 0xff else 0
+        return if (dc in 1..5) dc to false else null
     }
 
     fun isHttpTransport(data: ByteArray): Boolean {
