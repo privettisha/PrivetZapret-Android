@@ -188,7 +188,7 @@ class MainActivity : Activity() {
         }
         addView(mode)
     }
-    private fun dnsPage() = page("DNS", "") {
+    private fun dnsPage() = page("DNS", "Личный DoH из кабинета PrivetDNS можно вставить как основной сервер. Если оператор блокирует DoT/853, добавьте DoH как основной или резервный адрес.") {
         addView(text("ОСНОВНОЙ СЕРВЕР", 12, muted, true)); space(8)
         dnsInput = field("https://…/dns-query или tls://…"); dnsInput.contentDescription = "Основной DNS"; addView(dnsInput)
         label("РЕЗЕРВНЫЙ DOH · НЕОБЯЗАТЕЛЬНО")
