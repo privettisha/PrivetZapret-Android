@@ -5,8 +5,8 @@
 | Проект | Механизм | Что применено здесь |
 |---|---|---|
 | [zaprett-app](https://github.com/CherretGit/zaprett-app) | Интерфейс для root-модуля `zaprett`, резервный ByeDPI без root, загрузка стратегий и списков | Профили оставлены доступными; полный root-модуль не встраивается в текущую сборку |
-| [ZapretDroid](https://github.com/ezxidze/ZapretDroid) | Локальный VPN с набором DPI-стратегий, отдельная обработка QUIC и Telegram WebSocket | Полный QUIC Initial включён по умолчанию; Telegram WebSocket получает адрес узла из DNS |
+| [ZapretDroid](https://github.com/ezxidze/ZapretDroid) | Локальный VPN с набором DPI-стратегий, отдельная обработка QUIC и Telegram WebSocket | Полный QUIC Initial включён по умолчанию; Telegram WebSocket пробует известный IP, затем адрес из DNS |
 | [zaprett](https://github.com/egor-white/zaprett) | Magisk/KSU-модуль с `nfqws`, iptables/nfqueue и правилами для сервисов | Это возможный дополнительный root-путь для устройств с установленным модулем; у `VpnService` нет его привилегий |
 | [Nukera](https://github.com/finestcrtn/nukera) | Настройка стратегий по проверкам конкретных сервисов, включая `googlevideo`, локальный Telegram-прокси | Проверяются отдельно YouTube API и Googlevideo CDN; общий HTTPS не считается проверкой видео |
 
-Текущая проверка Googlevideo использует `/report_mapping`; она доказывает доступность HTTPS на CDN, но не воспроизведение конкретного ролика. Для окончательной проверки нужны реальные YouTube, Telegram и TikTok на Wi-Fi и мобильной сети пользователя. Если оператор блокирует адрес целиком или TikTok ограничивает регион, локальная DPI-стратегия не создаст удалённый выход.
+Текущая проверка Googlevideo использует `/report_mapping`; она доказывает доступность HTTPS на CDN, но не воспроизведение конкретного ролика. Для окончательной проверки нужны реальные YouTube и Telegram на Wi-Fi и мобильной сети пользователя. Если оператор блокирует адрес целиком или сервис ограничивает регион, локальная DPI-стратегия не создаст удалённый выход.

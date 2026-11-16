@@ -48,8 +48,13 @@ class MainActivity : Activity() {
     private var state = "off"
     private var telegramStatus = ""
     private var storageError = false
+    private var saving = false
+    private var lastDetail = "Готов к подключению"
+    private var lastDns = ""
+    private var lastHealth = ""
     private var refreshing = false
     private val io = Executors.newSingleThreadExecutor()
+    private val storageIo = Executors.newSingleThreadExecutor()
     @Volatile private var activeTest: EncryptedDns? = null
     private var testing = false
     private val handler = Handler(Looper.getMainLooper())
@@ -154,10 +159,9 @@ class MainActivity : Activity() {
         space(18)
         val services = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER }
         listOf(
-            Triple("YouTube", R.drawable.ic_youtube, 0),
-            Triple("Telegram", R.drawable.ic_telegram, 1),
-            Triple("TikTok", R.drawable.ic_tiktok, 2)
-        ).forEach { (name, icon, index) ->
+            "YouTube" to R.drawable.ic_youtube,
+            "Telegram" to R.drawable.ic_telegram
+        ).forEachIndexed { index, (name, icon) ->
             val card = column().apply {
                 gravity = Gravity.CENTER; background = shape(Color.WHITE)
                 setPadding(dp(8), dp(12), dp(8), dp(10))
@@ -173,8 +177,8 @@ class MainActivity : Activity() {
         addView(services)
         space(12)
         telegramConnect = button("Подключить Telegram") {
-            try { openLink("tg://socks?server=127.0.0.1&port=14430") }
-            catch (_: Exception) { message("Откройте Telegram → Настройки → Данные и память → Прокси: SOCKS5, 127.0.0.1, порт 14430.") }
+            if (!openLink("tg://socks?server=127.0.0.1&port=14430"))
+                message("Откройте Telegram → Настройки → Данные и память → Прокси: SOCKS5, 127.0.0.1, порт 14430.")
         }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }
         addView(telegramConnect, LinearLayout.LayoutParams(-1, -2))
         label("РЕЖИМ")
@@ -221,16 +225,17 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
         }; addView(desktopQuic)
         label("О ПРОЕКТЕ")
-        addView(text("PrivetZapret Android · 0.3.1 beta", 14, muted)); space(12)
+        addView(text("PrivetZapret Android · ${BuildConfig.VERSION_NAME}", 14, muted)); space(12)
         addView(button("Обновить приложение") {
-            openLink("https://github.com/privettisha/PrivetZapret-Android/releases/latest/download/PrivetZapret-Android.apk")
+            if (!openLink("https://github.com/privettisha/PrivetZapret-Android/releases/latest/download/PrivetZapret-Android.apk"))
+                message("Не удалось открыть страницу обновления")
         }, LinearLayout.LayoutParams(-1, -2))
         space(10)
-        addView(button("GitHub") { openLink("https://github.com/privettisha/PrivetZapret-Android") }.apply {
+        addView(button("GitHub") { if (!openLink("https://github.com/privettisha/PrivetZapret-Android")) message("Не удалось открыть GitHub") }.apply {
             background = shape(Color.WHITE, blue); setTextColor(blue)
         }, LinearLayout.LayoutParams(-1, -2))
         space(10)
-        addView(button("Telegram") { openLink("https://t.me/PRIVET_DNS") }.apply {
+        addView(button("Telegram") { if (!openLink("https://t.me/PRIVET_DNS")) message("Не удалось открыть Telegram") }.apply {
             background = shape(Color.WHITE, blue); setTextColor(blue)
         }, LinearLayout.LayoutParams(-1, -2))
     }
@@ -248,22 +253,39 @@ class MainActivity : Activity() {
         refreshing = false
     }
     private fun saveOptions() {
-        if (state != "off") return
+        if (state != "off" || saving) return
         val next = Settings(settings.dns, settings.fallback, settings.bootstrap, mode.isChecked,
             when (strategyGroup.checkedRadioButtonId) { 301 -> "split"; 302 -> "tls"; else -> "auto" },
             quic.isChecked, desktopQuic.isChecked)
-        try { if (storageError) return; Settings.save(this, next); settings = next }
-        catch (_: Exception) { message("Не удалось сохранить настройки"); refreshSettings() }
+        if (storageError) { refreshSettings(); return }
+        saving = true; renderState(lastDetail, lastDns, lastHealth)
+        storageIo.execute {
+            val saved = runCatching { Settings.save(applicationContext, next) }.isSuccess
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (saved) settings = next else { message("Не удалось сохранить настройки"); refreshSettings() }
+                saving = false; renderState(lastDetail, lastDns, lastHealth)
+            }
+        }
     }
     private fun form() = Settings(dnsInput.text.toString().trim(), fallbackInput.text.toString().trim(),
         bootstrapInput.text.toString().trim(), settings.dnsOnly, settings.strategy, settings.blockQuic,
         settings.desktopQuic)
     private fun saveDns() {
-        try {
-            val next = form(); next.profile(); Settings.save(this, next); settings = next; storageError = false
-            dnsResult.text = "DNS сохранён. Можно подключаться на главной."; dnsResult.setTextColor(blue)
-        } catch (e: IllegalArgumentException) { dnsResult.text = e.message ?: "Проверьте адрес DNS" }
-        catch (_: Exception) { dnsResult.text = "Не удалось сохранить профиль" }
+        val next = try { form().also { it.profile() } }
+        catch (e: IllegalArgumentException) { dnsResult.text = e.message ?: "Проверьте адрес DNS"; return }
+        saving = true; dnsResult.text = "Сохраняем DNS…"; renderState(lastDetail, lastDns, lastHealth)
+        storageIo.execute {
+            val saved = runCatching { Settings.save(applicationContext, next) }.isSuccess
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (saved) {
+                    settings = next; storageError = false
+                    dnsResult.text = "DNS сохранён. Можно подключаться на главной."; dnsResult.setTextColor(blue)
+                } else dnsResult.text = "Не удалось сохранить профиль"
+                saving = false; renderState(lastDetail, lastDns, lastHealth)
+            }
+        }
     }
     private fun testDns() {
         val profile = try { form().profile() } catch (e: IllegalArgumentException) { dnsResult.text = e.message; return }
@@ -278,21 +300,30 @@ class MainActivity : Activity() {
                 else "DNS ответил, но не вернул адрес example.com."
             } catch (_: Exception) { "DNS не ответил. Проверьте ссылку и сеть. Если порт DoT закрыт, добавьте резервный DoH." }
             finally { resolver.close(); activeTest = null }
-            runOnUiThread { if (!isDestroyed) { testing = false; dnsResult.text = result; dnsTest.isEnabled = state == "off" } }
+            runOnUiThread { if (!isDestroyed) { testing = false; dnsResult.text = result; dnsTest.isEnabled = state == "off" && !saving } }
         }
     }
     private fun toggle() {
+        if (saving) return
         if (state == "on" || state == "starting") {
-            startService(Intent(this, TunnelService::class.java).setAction(TunnelService.STOP)); return
+            try { startService(Intent(this, TunnelService::class.java).setAction(TunnelService.STOP)) }
+            catch (_: Exception) { message("Не удалось остановить VPN. Отключите его в настройках Android.") }
+            return
         }
         if (storageError) { selectTab(1); message("Сначала сохраните DNS-профиль"); return }
-        try { settings.profile(); Settings.save(this, settings) } catch (_: Exception) { selectTab(1); message("Проверьте и сохраните DNS"); return }
-        val prepare = VpnService.prepare(this)
-        if (prepare != null) startActivityForResult(prepare, 42) else connect()
+        try { settings.profile() } catch (_: Exception) { selectTab(1); message("Проверьте и сохраните DNS"); return }
+        try {
+            val prepare = VpnService.prepare(this)
+            if (prepare != null) startActivityForResult(prepare, 42) else connect()
+        } catch (_: Exception) { message("Android не разрешил запросить VPN. Проверьте настройки устройства.") }
     }
     private fun connect() {
         state = "starting"; renderState("Подключаем защищённый DNS", "", "")
-        startForegroundService(Intent(this, TunnelService::class.java).setAction(TunnelService.START))
+        try { startForegroundService(Intent(this, TunnelService::class.java).setAction(TunnelService.START)) }
+        catch (_: Exception) {
+            state = "off"; renderState("Не удалось запустить VPN-службу", "", "")
+            return
+        }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 43)
     }
@@ -302,20 +333,24 @@ class MainActivity : Activity() {
         if (requestCode == 42 && resultCode == RESULT_OK) connect()
     }
     private fun renderState(detail: String, dns: String, health: String) {
+        lastDetail = detail; lastDns = dns; lastHealth = health
         val off = state == "off"
         headline.text = when (state) { "on" -> "Вы подключены"; "starting" -> "Подключаем…"; "stopping" -> "Отключаем…"; else -> "Можно начинать" }
         power.text = if (off) "Подключить" else if (state == "starting") "Отменить" else "Отключить"
-        power.isEnabled = state != "stopping"
+        power.isEnabled = state != "stopping" && !saving
         statusLine.text = listOf(detail, dns).filter { it.isNotBlank() }.joinToString(" · ")
         healthLine.text = health
         connectionTest.isEnabled = state == "on" && !health.startsWith("Проверяем")
         telegramConnect.isEnabled = state == "on" && telegramStatus == "ready"
-        mode.isEnabled = off; quic.isEnabled = off; desktopQuic.isEnabled = off
-        for (i in 0 until strategyGroup.childCount) strategyGroup.getChildAt(i).isEnabled = off
-        listOf(dnsInput, fallbackInput, bootstrapInput, save).forEach { it.isEnabled = off }
-        dnsTest.isEnabled = off && !testing
+        mode.isEnabled = off && !saving; quic.isEnabled = off && !saving; desktopQuic.isEnabled = off && !saving
+        for (i in 0 until strategyGroup.childCount) strategyGroup.getChildAt(i).isEnabled = off && !saving
+        listOf(dnsInput, fallbackInput, bootstrapInput, save).forEach { it.isEnabled = off && !saving }
+        dnsTest.isEnabled = off && !testing && !saving
     }
-    private fun openLink(url: String) { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+    private fun openLink(url: String): Boolean = try {
+        startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        true
+    } catch (_: Exception) { false }
     private fun message(value: String) { AlertDialog.Builder(this).setMessage(value).setPositiveButton("Понятно", null).show() }
     @SuppressLint("UnspecifiedRegisterReceiverFlag") // API <33 uses our signature-only permission instead.
     override fun onResume() {
@@ -327,5 +362,5 @@ class MainActivity : Activity() {
     }
     override fun onPause() { handler.removeCallbacks(pollStatus); unregisterReceiver(receiver); super.onPause() }
     override fun onSaveInstanceState(outState: Bundle) { outState.putInt("tab", currentTab); super.onSaveInstanceState(outState) }
-    override fun onDestroy() { activeTest?.close(); io.shutdownNow(); handler.removeCallbacksAndMessages(null); super.onDestroy() }
+    override fun onDestroy() { activeTest?.close(); io.shutdownNow(); storageIo.shutdown(); handler.removeCallbacksAndMessages(null); super.onDestroy() }
 }
