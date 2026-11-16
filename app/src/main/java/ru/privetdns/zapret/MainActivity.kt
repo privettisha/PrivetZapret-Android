@@ -227,7 +227,7 @@ class MainActivity : Activity() {
         label("О ПРОЕКТЕ")
         addView(text("PrivetZapret Android · ${BuildConfig.VERSION_NAME}", 14, muted)); space(12)
         addView(button("Обновить приложение") {
-            if (!openLink("https://github.com/privettisha/PrivetZapret-Android/releases/latest/download/PrivetZapret-Android.apk"))
+            if (!openLink("https://github.com/privettisha/PrivetZapret-Android/releases"))
                 message("Не удалось открыть страницу обновления")
         }, LinearLayout.LayoutParams(-1, -2))
         space(10)
