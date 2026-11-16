@@ -57,7 +57,7 @@ class TunnelService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             STOP -> stopEngine()
-            QUERY -> { publish(); if (state == "off" && !nativeUsed) stopSelf() }
+            QUERY -> { publish(); if (state == "off" && !nativeUsed) stopSelf(startId) }
             CHECK -> if (state == "on") requestProbe()
             START -> {
                 if (state != "off") { publish(); return START_NOT_STICKY }
@@ -279,5 +279,5 @@ class TunnelService : VpnService() {
         if (nativeUsed) android.os.Process.killProcess(android.os.Process.myPid())
     }
     override fun onRevoke() { stopEngine(); super.onRevoke() }
-    override fun onDestroy() { if (!stopping.get()) stopEngine(); super.onDestroy() }
+    override fun onDestroy() { if (state != "off" && !stopping.get()) stopEngine(); super.onDestroy() }
 }
