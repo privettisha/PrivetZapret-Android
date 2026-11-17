@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var healthLine: TextView
     private lateinit var connectionTest: Button
     private lateinit var telegramConnect: Button
+    private lateinit var telegramWebProxyInput: EditText
     private lateinit var mode: Switch
     private lateinit var dnsInput: EditText
     private lateinit var fallbackInput: EditText
@@ -156,6 +157,12 @@ class MainActivity : Activity() {
             startService(Intent(this@MainActivity, TunnelService::class.java).setAction(TunnelService.CHECK))
         }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }
         addView(connectionTest, LinearLayout.LayoutParams(-1, -2))
+        label("РЕЖИМ")
+        mode = Switch(this@MainActivity).apply {
+            text = "Только DNS"; textSize = 17f; setTextColor(ink); minHeight = dp(48)
+            setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
+        }
+        addView(mode)
         space(18)
         val services = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER }
         listOf(
@@ -176,17 +183,25 @@ class MainActivity : Activity() {
         }
         addView(services)
         space(12)
-        telegramConnect = button("Подключить Telegram") {
+        telegramConnect = button("Локальный прокси Telegram") {
             if (!openLink("tg://socks?server=127.0.0.1&port=14430"))
                 message("Откройте Telegram → Настройки → Данные и память → Прокси: SOCKS5, 127.0.0.1, порт 14430.")
         }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }
         addView(telegramConnect, LinearLayout.LayoutParams(-1, -2))
-        label("РЕЖИМ")
-        mode = Switch(this@MainActivity).apply {
-            text = "Только DNS"; textSize = 17f; setTextColor(ink); minHeight = dp(48)
-            setOnCheckedChangeListener { _, _ -> if (!refreshing) saveOptions() }
+        space(16)
+        addView(text("Если оператор блокирует серверы Telegram, используйте зарубежный WEB Proxy из кабинета PrivetDNS.", 14, muted))
+        space(8)
+        telegramWebProxyInput = field("https://t.me/webproxy?…").apply {
+            contentDescription = "Ссылка Telegram WEB Proxy"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
-        addView(mode)
+        addView(telegramWebProxyInput)
+        space(8)
+        addView(button("Добавить WEB Proxy в Telegram") {
+            val link = try { TelegramWebProxyLink.parse(telegramWebProxyInput.text.toString()) }
+            catch (e: IllegalArgumentException) { message(e.message ?: "Проверьте ссылку WEB Proxy"); return@button }
+            if (!openLink(link)) message("Telegram не открыл WEB Proxy. Обновите Telegram или добавьте прокси типа WEB вручную: сервер и ключ указаны в вашей ссылке.")
+        }.apply { background = shape(Color.WHITE, blue); setTextColor(blue) }, LinearLayout.LayoutParams(-1, -2))
     }
     private fun dnsPage() = page("DNS", "Личный DoH из кабинета PrivetDNS можно вставить как основной сервер. Если оператор блокирует DoT/853, добавьте DoH как основной или резервный адрес.") {
         addView(text("ОСНОВНОЙ СЕРВЕР", 12, muted, true)); space(8)
