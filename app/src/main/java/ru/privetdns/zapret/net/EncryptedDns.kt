@@ -66,7 +66,7 @@ class EncryptedDns(
         } catch (_: Exception) {
             if (backup != null && !closed) {
                 val answer = exchange(backup, query)
-                fallbackUntil.set(System.nanoTime() + TimeUnit.SECONDS.toNanos(60))
+                fallbackUntil.set(System.nanoTime() + TimeUnit.MINUTES.toNanos(5))
                 status("DoH · резерв")
                 return answer
             }
@@ -107,11 +107,16 @@ class EncryptedDns(
         // Try every configured/bootstrap address, keeping the original TLS name and certificate check.
         val addresses = lookup(endpoint.host)
         if (addresses.isEmpty()) throw IOException("DNS bootstrap failed")
+        // A blocked DoT port must not delay the explicit DoH fallback once per IP.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
         for (address in addresses) {
+            val remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()).toInt()
+            if (remainingMs <= 0) break
             val raw = Socket(proxy)
             sockets.add(raw)
             try {
-                raw.connect(InetSocketAddress(address, endpoint.port), 4000); raw.soTimeout = 5000
+                raw.connect(InetSocketAddress(address, endpoint.port), minOf(3000, remainingMs))
+                raw.soTimeout = minOf(4000, remainingMs)
                 (tlsFactory.createSocket(raw, endpoint.host, endpoint.port, true) as SSLSocket).use { tls ->
                     tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
                     tls.startHandshake()
@@ -126,6 +131,10 @@ class EncryptedDns(
             } finally { sockets.remove(raw); runCatching { raw.close() } }
         }
         throw IOException("DoT server unavailable on all addresses")
+    }
+    fun onNetworkChanged() {
+        fallbackUntil.set(0)
+        http.connectionPool.evictAll()
     }
     override fun close() {
         closed = true

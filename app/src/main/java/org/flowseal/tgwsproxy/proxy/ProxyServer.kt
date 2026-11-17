@@ -23,7 +23,8 @@ class ProxyServer(
     private val port: Int = 1080,
     private val dcOpt: Map<Int, String> = mapOf(
         1 to "149.154.175.50", 2 to "149.154.167.220", 3 to "149.154.175.100",
-        4 to "149.154.167.91", 5 to "91.108.56.100", 203 to "149.154.167.220"
+        // Upstream recommends DC4 -> DC2 for media on non-Premium accounts.
+        4 to "149.154.167.220", 5 to "91.108.56.100", 203 to "149.154.167.220"
     ),
     // Idle WebSockets can be closed remotely while still looking open locally;
     // a fresh route is safer on mobile network handovers.
@@ -43,8 +44,8 @@ class ProxyServer(
 
     // Failure cooldown tracking
     private val dcFailUntil = ConcurrentHashMap<Pair<Int, Boolean>, Long>()
+    private val successfulRoutes = ConcurrentHashMap<Pair<Int, Boolean>, Pair<String, String>>()
     private val DC_FAIL_COOLDOWN = 30_000L  // 30 seconds
-    private val WS_FAIL_TIMEOUT = 2000      // 2 seconds
 
     private val bufSize = bufKb * 1024
 
@@ -110,6 +111,7 @@ class ProxyServer(
     /** Force Telegram to reconnect on the new underlying Wi-Fi/mobile network. */
     fun onNetworkChanged() {
         dcFailUntil.clear()
+        successfulRoutes.clear()
         clients.forEach { runCatching { it.close() } }
     }
 
@@ -253,31 +255,49 @@ class ProxyServer(
 
             // Try WebSocket
             val failUntil = dcFailUntil[dcKey] ?: 0L
-            val wsTimeout = if (now < failUntil) WS_FAIL_TIMEOUT else 10000
+            if (now < failUntil) {
+                tcpFallback(input, output, dst, dstPort, initData, label, client, dc, isMedia)
+                return
+            }
+            val wsTimeout = 4000
 
             val domains = TelegramDC.wsDomains(dc, isMedia)
-            val target = wsAddress(domains.first(), dcOpt[dc]!!)
+            val target = dcOpt[dc]!!
             var ws: RawWebSocket? = null
 
+            // Media creates many short connections. Reuse the last working route and
+            // avoid a fresh DoH lookup for every WebSocket handshake.
+            successfulRoutes[dcKey]?.let { (domain, address) ->
+                ws = runCatching { RawWebSocket.connect(address, domain, timeoutMs = 2500) }.getOrNull()
+                if (ws == null) successfulRoutes.remove(dcKey, domain to address)
+            }
+
             // Try pool first
-            ws = wsPool.get(dc, isMedia, target, domains)
+            if (ws == null) ws = wsPool.get(dc, isMedia, target, domains)
             if (ws != null) {
-                log("[$label] DC$dc$mediaTag ($dst:$dstPort) -> pool hit via $target")
+                log("[$label] DC$dc$mediaTag ($dst:$dstPort) -> reused route")
             } else {
                 // Fresh connection
                 for (domain in domains) {
                     val url = "wss://$domain/apiws"
-                    // The IP returned for each WSS name can change independently. The
-                    // old fixed DC2 IP made every other DC depend on a single endpoint.
-                    for (address in listOf(wsAddress(domain, target), dcOpt[dc]!!).distinct()) {
-                        log("[$label] DC$dc$mediaTag ($dst:$dstPort) -> $url via $address")
-                        try {
-                            ws = RawWebSocket.connect(address, domain, timeoutMs = wsTimeout.coerceAtMost(4000))
-                            break
-                        } catch (e: WsHandshakeError) {
-                            stats.wsErrors.incrementAndGet()
-                        } catch (e: Exception) {
-                            stats.wsErrors.incrementAndGet()
+                    // The configured DC IP is usually fastest. Only resolve the WSS
+                    // name when that route fails; DNS can be slow on mobile networks.
+                    log("[$label] DC$dc$mediaTag ($dst:$dstPort) -> $url via $target")
+                    try {
+                        ws = RawWebSocket.connect(target, domain, timeoutMs = wsTimeout)
+                        successfulRoutes[dcKey] = domain to target
+                    } catch (e: Exception) {
+                        stats.wsErrors.incrementAndGet()
+                    }
+                    if (ws == null) {
+                        val resolved = wsAddress(domain, target)
+                        if (resolved != target) {
+                            try {
+                                ws = RawWebSocket.connect(resolved, domain, timeoutMs = wsTimeout)
+                                successfulRoutes[dcKey] = domain to resolved
+                            } catch (e: Exception) {
+                                stats.wsErrors.incrementAndGet()
+                            }
                         }
                     }
                     if (ws != null) break

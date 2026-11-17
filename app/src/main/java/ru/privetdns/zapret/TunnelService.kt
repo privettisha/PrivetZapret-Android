@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.*
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import java.net.*
 import java.net.Proxy
@@ -28,7 +30,16 @@ class TunnelService : VpnService() {
         const val DNS_IP = "10.111.0.2"
     }
     private val worker = Executors.newSingleThreadScheduledExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val stopping = AtomicBoolean(false)
+    private val startupWatchdog = Runnable {
+        if (state == "starting" && !stopping.get())
+            stopEngine("Подключение заняло слишком много времени. Проверьте DNS и сеть.")
+    }
+    private val shutdownWatchdog = Runnable {
+        // A native close may hang. This service runs in :engine, separate from the UI.
+        if (state == "stopping") android.os.Process.killProcess(android.os.Process.myPid())
+    }
     private val probeQueued = AtomicBoolean(false)
     @Volatile private var state = "off"
     @Volatile private var detail = "Готов к подключению"
@@ -40,22 +51,28 @@ class TunnelService : VpnService() {
     @Volatile private var dns: EncryptedDns? = null
     @Volatile private var gateway: SocksGateway? = null
     @Volatile private var telegramProxy: ProxyServer? = null
-    private var nativeUsed = false
-    private var callback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var nativeUsed = false
+    @Volatile private var callback: ConnectivityManager.NetworkCallback? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             STOP -> stopEngine()
-            QUERY -> { publish(); if (state == "off" && !nativeUsed) stopSelf() }
+            QUERY -> { publish(); if (state == "off" && !nativeUsed) stopSelf(startId) }
             CHECK -> if (state == "on") requestProbe()
             START -> {
                 if (state != "off") { publish(); return START_NOT_STICKY }
                 state = "starting"; detail = "Подключаем защищённый DNS"; publish()
-                val manager = getSystemService(NotificationManager::class.java)
-                manager.createNotificationChannel(NotificationChannel("connection", "Подключение", NotificationManager.IMPORTANCE_LOW))
-                val notification = notification()
-                if (Build.VERSION.SDK_INT >= 34) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
-                else startForeground(1, notification)
+                try {
+                    val manager = getSystemService(NotificationManager::class.java)
+                    manager.createNotificationChannel(NotificationChannel("connection", "Подключение", NotificationManager.IMPORTANCE_LOW))
+                    val notification = notification()
+                    if (Build.VERSION.SDK_INT >= 34) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+                    else startForeground(1, notification)
+                } catch (_: Exception) {
+                    stopEngine("Android не разрешил запустить VPN-службу.")
+                    return START_NOT_STICKY
+                }
+                mainHandler.postDelayed(startupWatchdog, 45_000)
                 worker.execute { try { startEngine() } catch (_: Exception) {
                     if (!stopping.get()) stopEngine("Не удалось подключиться. Проверьте DNS, резервный адрес и сеть.")
                 } }
@@ -163,15 +180,21 @@ class TunnelService : VpnService() {
         setUnderlyingNetworks(null)
         Thread.sleep(200)
         if (!stopping.get()) {
-            state = "on"
-            detail = if (config.dnsOnly) "Защищённый DNS подключён" else "Локальный обход и DNS подключены"
-            publish(); getSystemService(NotificationManager::class.java).notify(1, notification())
+            synchronized(this) {
+                if (stopping.get()) return
+                state = "on"
+                detail = if (config.dnsOnly) "Защищённый DNS подключён" else "Локальный обход и DNS подключены"
+                mainHandler.removeCallbacks(startupWatchdog)
+                publish()
+            }
+            getSystemService(NotificationManager::class.java).notify(1, notification())
             val cm = getSystemService(ConnectivityManager::class.java)
             val activeNetwork = AtomicReference<Network?>()
             val watcher = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     val previous = activeNetwork.getAndSet(network)
                     if (previous != null && previous != network) {
+                        dns?.onNetworkChanged()
                         gateway?.onNetworkChanged()
                         telegramProxy?.onNetworkChanged()
                     }
@@ -179,6 +202,7 @@ class TunnelService : VpnService() {
                 }
                 override fun onLost(network: Network) {
                     if (activeNetwork.compareAndSet(network, null)) {
+                        dns?.onNetworkChanged()
                         gateway?.onNetworkChanged()
                         telegramProxy?.onNetworkChanged()
                     }
@@ -229,9 +253,17 @@ class TunnelService : VpnService() {
             .putExtra("dns", dnsStatus).putExtra("health", health).putExtra("telegram", telegramStatus),
             "ru.privetdns.zapret.INTERNAL")
     }
-    @Synchronized private fun stopEngine(error: String? = null) {
-        if (!stopping.compareAndSet(false, true)) return
-        state = "stopping"; detail = "Отключение"; publish()
+    private fun stopEngine(error: String? = null) {
+        synchronized(this) {
+            if (!stopping.compareAndSet(false, true)) return
+            mainHandler.removeCallbacks(startupWatchdog)
+            state = "stopping"; detail = "Отключение"; publish()
+            mainHandler.postDelayed(shutdownWatchdog, 10_000)
+        }
+        // Native shutdown and socket closes can block. Never run them on Android's main thread.
+        Thread({ finishStop(error) }, "engine-stop").start()
+    }
+    private fun finishStop(error: String?) {
         callback?.let { runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } }
         if (nativeUsed) { runCatching { NativeBridge.stopTunnel() }; runCatching { NativeBridge.stopProxy() } }
         runCatching { tun?.close() }; runCatching { telegramProxy?.stop() }
@@ -240,11 +272,12 @@ class TunnelService : VpnService() {
         OutboundSocket.resolveName = null
         worker.shutdownNow()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        mainHandler.removeCallbacks(shutdownWatchdog)
         state = "off"; detail = error ?: "Готов к подключению"; dnsStatus = ""; health = ""
         telegramStatus = ""; publish(); stopSelf()
         // ByeDPI has process-global state. Only the isolated :engine worker is terminated.
         if (nativeUsed) android.os.Process.killProcess(android.os.Process.myPid())
     }
     override fun onRevoke() { stopEngine(); super.onRevoke() }
-    override fun onDestroy() { if (!stopping.get()) stopEngine(); super.onDestroy() }
+    override fun onDestroy() { if (state != "off" && !stopping.get()) stopEngine(); super.onDestroy() }
 }

@@ -39,7 +39,7 @@ class Settings(
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
             val data = JSONObject(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8))
-            // v1 enabled QUIC blocking by default. That broke TikTok and Telegram media, so
+            // v1 enabled QUIC blocking by default. That broke video and Telegram media, so
             // old profiles migrate to UDP enabled while v2 still respects an explicit choice.
             val blockQuic = if (data.optInt("schema", 1) >= 2) data.optBoolean("blockQuic", false) else false
             return Settings(data.getString("dns"), data.optString("fallback"), data.optString("bootstrap"),
